@@ -7,93 +7,84 @@ from distributed_algorithm import run_sim
 
 class DroneAgent(DynamicAgent):
     """
-    Individual drone agent for formation control.
+    Drone agent for distributed formation control around a target.
     
     Attributes:
-        id (int): Unique agent identifier
+        id (int): Unique agent identifier (0-4)
         state (np.ndarray): Current position [x, y] in R^2
-        role (str): 'leader' or 'follower'
-        formation_offset (np.ndarray): Desired [dx, dy] offset from leader
+        target_pos (np.ndarray): Shared target position [x, y]
+        formation_radius (float): Distance from target for formation
         alpha (float): Control gain for convergence speed
-        msgs (list): Buffer for incoming messages, each msg is tuple (id, state, role)
-        state_hist (list): History of states for plotting
-        val (np.ndarray): Alias for state (for compatibility with plot_agents)
+        msgs (list): Buffer for messages from neighbors
+        val (np.ndarray): Alias for state (plotting compatibility)
     """
     
-    def __init__(self, id, state, role='follower', formation_offset=None, alpha=0.5):
+    def __init__(self, id, state, target_pos, formation_radius=5.0, alpha=0.1):
         """
         Initialize drone agent.
         
         Args:
-            id (int): Agent ID
-            state (list or np.ndarray): Initial position [x, y]
-            role (str): 'leader' or 'follower'
-            formation_offset (np.ndarray or None): Desired offset from leader [dx, dy]
-            alpha (float): Control gain (0 < alpha < 1 for stability)
+            id (int): Agent ID (0-4), determines position in formation
+            state (list/np.ndarray): Initial position [x, y]
+            target_pos (np.ndarray): Target location [x, y]
+            formation_radius (float): Radius of formation circle around target
+            alpha (float): Control gain (0 < alpha <= 1)
         """
-        self.id = id
+        self.id = id  # int: 0-4
         self.state = np.array(state, dtype=float)  # np.ndarray shape (2,)
-        self.val = self.state  # Alias for compatibility with plotting
-        self.role = role  # str: 'leader' or 'follower'
-        self.formation_offset = formation_offset  # np.ndarray shape (2,) or None
+        self.val = self.state  # Alias for plotting
+        self.target_pos = np.array(target_pos, dtype=float)  # np.ndarray shape (2,)
+        self.formation_radius = formation_radius  # float
         self.alpha = alpha  # float
-        self.msgs = []  # list of tuples: [(id, state, role), ...]
-        self.state_hist = [self.state.copy()]  # list of np.ndarray
+        self.msgs = []  # list of tuples: [(id, state), ...]
+        self.state_hist = [self.state.copy()]
         
     def msg(self):
         """
-        Create message to broadcast to neighbors.
+        Broadcast current position to neighbors.
         
         Returns:
-            tuple: (id, state, role) where
-                   id (int): this agent's ID
-                   state (np.ndarray): current position [x, y]
-                   role (str): 'leader' or 'follower'
+            tuple: (id, state) where state is np.ndarray [x, y]
         """
-        return (self.id, self.state.copy(), self.role)
+        return (self.id, self.state.copy())
     
     def stf(self):
         """
-        State Transition Function: Update state based on control law.
-        This runs after all messages are received.
+        State Transition Function: Update position based on formation control.
+        Runs after receiving all neighbor messages.
         """
-        # Compute control input (desired velocity direction)
-        desired_velocity = self.compute_control()  # np.ndarray shape (2,)
+        # Compute control based on formation objective
+        control_input = self.compute_formation_control()  # np.ndarray shape (2,)
         
-        # Update state using simple integration
-        self.state = self.state + self.alpha * desired_velocity
-        self.val = self.state  # Keep val synchronized
+        # Update state
+        self.state = self.state + self.alpha * control_input
+        self.val = self.state  # Sync alias
         self.state_hist.append(self.state.copy())
         
-    def compute_control(self):
+    def compute_formation_control(self):
         """
-        Compute control law (formation tracking).
+        Compute control to drive agent to assigned formation position.
+        
+        Formation: Pentagon around target, agent i at angle (2πi/5)
         
         Returns:
-            np.ndarray: Control input (velocity direction) shape (2,)
+            np.ndarray: Control velocity [vx, vy]
         """
-        if self.role == 'leader':
-            # Leader stays stationary for now
-            return np.zeros(2)  # np.ndarray shape (2,)
+        # Compute assigned angle based on ID
+        # 5 agents form a pentagon: angles at 0°, 72°, 144°, 216°, 288°
+        n_agents = 5  # Total number of agents
+        assigned_angle = (2 * np.pi * self.id) / n_agents  # float: radians
         
-        # Follower: search for leader's state in messages
-        leader_state = None  # Will be np.ndarray shape (2,) when found
-        for msg_id, msg_state, msg_role in self.msgs:
-            if msg_role == 'leader':
-                leader_state = msg_state  # np.ndarray shape (2,)
-                break
-        
-        if leader_state is None:
-            # No leader found, don't move
-            return np.zeros(2)
-        
-        # Desired position = leader's position + formation offset
-        desired_pos = leader_state + self.formation_offset  # np.ndarray shape (2,)
+        # Desired position = target + radius * [cos(θ), sin(θ)]
+        desired_pos = self.target_pos + self.formation_radius * np.array([
+            np.cos(assigned_angle),
+            np.sin(assigned_angle)
+        ])  # np.ndarray shape (2,)
         
         # Proportional control: move toward desired position
         error = desired_pos - self.state  # np.ndarray shape (2,)
         
-        return error  # Control input proportional to error
+        return error  # Control input
     
     def clear_msgs(self):
         """Clear message buffer for next iteration."""
@@ -101,85 +92,76 @@ class DroneAgent(DynamicAgent):
     
     def add_msg(self, msg):
         """
-        Add received message to buffer.
+        Receive message from neighbor.
         
         Args:
-            msg (tuple): (id, state, role) from neighboring agent
+            msg (tuple): (id, state) from another agent
         """
         self.msgs.append(msg)
     
     def ctl(self):
-        """
-        Control output (required by DynamicAgent interface).
-        For now, just returns current state.
-        
-        Returns:
-            np.ndarray: Current state [x, y]
-        """
+        """Required by DynamicAgent interface. Returns current state."""
         return self.state
     
     def step(self):
-        """
-        Dynamics integration step (required by DynamicAgent interface).
-        Currently not used - state update happens in stf().
-        """
+        """Required by DynamicAgent interface. State update in stf()."""
         pass
 
 
 if __name__ == "__main__":
     # Simulation parameters
-    n = 5  # int: Total number of agents (1 leader + 4 followers)
-    max_iter = 200  # int: Number of simulation iterations
-    alpha = 0.1  # float: Control gain (smaller = smoother, slower convergence)
+    n = 5  # int: Number of drones
+    max_iter = 300  # int: Simulation steps
+    alpha = 0.15  # float: Control gain (higher = faster convergence)
+    formation_radius = 8.0  # float: Formation size
     
-    # Formation geometry: square pattern around leader
-    # Each follower has a desired offset from the leader's position
-    formation_offsets = {
-        # Agent ID: offset vector [dx, dy]
-        1: np.array([3, 0]),    # Right of leader
-        2: np.array([0, 3]),    # Above leader
-        3: np.array([-3, 0]),   # Left of leader
-        4: np.array([0, -3])    # Below leader
-    }
+    # Target position (stationary for now)
+    target_pos = np.array([50.0, 50.0])  # np.ndarray shape (2,)
     
-    # Initialize agents
-    agents = []  # list of DroneAgent objects
+    # Environment boundaries
+    env_lims = [0, 100, 0, 100]  # list: [x_min, x_max, y_min, y_max]
     
-    # Create leader at center of environment
-    agents.append(DroneAgent(
-        id=0, 
-        state=[50, 50],  # Center of 100x100 environment
-        role='leader'
-    ))
+    # Initialize agents at random positions
+    agents = []  # list of DroneAgent
+    np.random.seed(42)  # For reproducibility
     
-    # Create followers at random initial positions
-    for i in range(1, n):
-        init_pos = np.random.uniform(40, 60, 2)  # Random position near leader
+    for i in range(n):
+        # Random initial position in environment
+        init_pos = np.random.uniform(20, 80, 2)  # np.ndarray shape (2,)
+        
         agents.append(DroneAgent(
-            id=i, 
-            state=init_pos, 
-            role='follower',
-            formation_offset=formation_offsets[i],
+            id=i,
+            state=init_pos,
+            target_pos=target_pos,
+            formation_radius=formation_radius,
             alpha=alpha
         ))
     
-    # Communication graph: fully connected (all agents can communicate)
-    G = nx.complete_graph(n)  # networkx.Graph object
+    # Communication graph: fully connected (all agents communicate)
+    G = nx.complete_graph(n)  # networkx.Graph
     
-    # Environment limits for plotting [x_min, x_max, y_min, y_max]
-    env_lims = [0, 100, 0, 100]
+    # Run simulation
+    print("Starting formation control simulation...")
+    print(f"Target at: {target_pos}")
+    print(f"Formation radius: {formation_radius}")
+    print(f"Initial positions:")
+    for agent in agents:
+        print(f"  Agent {agent.id}: {agent.state}")
     
-    # Run simulation with visualization
     agents = run_sim(
-        agents,  # list of DroneAgent
-        G,  # networkx.Graph
-        max_iter,  # int
-        return_agents=True,  # bool: return updated agents
-        plotYN=True,  # bool: enable real-time plotting
-        env_lims=env_lims  # list: environment boundaries
+        agents,
+        G,
+        max_iter,
+        return_agents=True,
+        plotYN=True,
+        env_lims=env_lims
     )
     
-    print("Formation achieved!")
-    print(f"Final positions:")
+    print("\nFormation achieved!")
+    print("Final positions:")
     for agent in agents:
-        print(f"  Agent {agent.id} ({agent.role}): {agent.state}")
+        # Compute distance to assigned position
+        angle = (2 * np.pi * agent.id) / n
+        desired = target_pos + formation_radius * np.array([np.cos(angle), np.sin(angle)])
+        error = np.linalg.norm(agent.state - desired)
+        print(f"  Agent {agent.id}: {agent.state}, error: {error:.3f}")
