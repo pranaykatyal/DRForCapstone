@@ -1,1 +1,10 @@
 <paste the above here>
+
+# Isaac Sim / Simulation
+simulation/.vscode/
+simulation/_isaac_sim/
+*.cache
+simulation/logs/
+*.bag
+*.mp4
+*.avi
