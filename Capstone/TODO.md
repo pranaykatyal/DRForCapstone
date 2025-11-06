@@ -10,6 +10,8 @@
 - [ ] Sketch out 2-agent collision scenario on paper
 - [ ] Map key equations to mathematical concepts
 
+-----------------------DONE----------------------
+
 **Wednesday - GCBF+ Paper** 
 - [ ] Read Section III: GCBF theory (Definition 1, Theorem 1)
 - [ ] Focus on Section IV-B: Loss functions (equations 19-22)
@@ -18,6 +20,10 @@
 - [ ] Compare centralized vs decentralized formulations
 - [ ] Note differences from Borrmann approach
 
+-----------------------DONE----------------------
+
+
+
 **Friday - Code Walkthrough**
 - [ ] Trace `cbf_safety.py` line-by-line with paper equations
 - [ ] Map `_inter_drone_cbf_constraint` to paper math
@@ -25,6 +31,10 @@
 - [ ] Check `_obstacle_cbf_constraint` implementation
 - [ ] Verify `check_safety` logic
 - [ ] Test with simple 2-drone scenario
+
+-----------------------DONE----------------------
+
+
 
 ---
 
