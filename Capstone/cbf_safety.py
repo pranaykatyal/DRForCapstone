@@ -49,43 +49,37 @@ class CBFSafetyFilter:
         self.constraint_violations = 0
         
     def filter_accelerations(self,
-                            positions: np.ndarray,
-                            velocities: np.ndarray,
-                            acc_desired: np.ndarray,
-                            obstacles: Optional[List[dict]] = None) -> np.ndarray:
+                        positions: np.ndarray,
+                        velocities: np.ndarray,
+                        acc_desired: np.ndarray,
+                        obstacles: Optional[List[dict]] = None) -> np.ndarray:
         """
-        Filter desired accelerations through CBF-QP to ensure safety.
-        
-        Args:
-            positions: (n_drones, 3) array of positions
-            velocities: (n_drones, 3) array of velocities
-            acc_desired: (n_drones, 3) array of desired accelerations
-            obstacles: List of obstacle dicts with 'center' and 'radius'
-            
-        Returns:
-            acc_safe: (n_drones, 3) array of safe accelerations
+        Filter using graph-based CBF.
+        Only forms constraints between neighbors.
         """
-        import time
-        start_time = time.time()
         
-        # Decision variables: safe accelerations for all drones
+        # Decision variables
         a = cp.Variable((self.n_drones, 3))
         
-        # Objective: minimize deviation from desired accelerations
+        # Objective: minimize deviation from desired
         cost = cp.sum_squares(a - acc_desired)
         
-        # Constraints list
         constraints = []
         
-        # 1. Inter-drone collision avoidance constraints
+        # 1. GRAPH-BASED inter-drone constraints
+        #    Only between neighbors!
         for i in range(self.n_drones):
-            for j in range(i + 1, self.n_drones):
-                cbf_constraint = self._inter_drone_cbf_constraint(
-                    i, j, positions, velocities, a
-                )
-                constraints.append(cbf_constraint)
+            neighbors_i = self.get_neighbors(i, positions)
+            
+            # Only form CBF with neighbors within sensing radius
+            for j in neighbors_i:
+                if j > i:  # Avoid duplicate constraints
+                    cbf_constraint = self._inter_drone_cbf_constraint(
+                        i, j, positions, velocities, a
+                    )
+                    constraints.append(cbf_constraint)
         
-        # 2. Obstacle avoidance constraints
+        # 2. Obstacle constraints (unchanged)
         if obstacles is not None:
             for i in range(self.n_drones):
                 for obs in obstacles:
@@ -94,34 +88,20 @@ class CBFSafetyFilter:
                     )
                     constraints.append(obs_constraint)
         
-        # 3. Acceleration magnitude limits
+        # 3. Acceleration limits (unchanged)
         for i in range(self.n_drones):
-            # Box constraints: -a_max ≤ a[i] ≤ a_max for each component
             constraints.append(a[i, :] <= self.a_max)
             constraints.append(a[i, :] >= -self.a_max)
         
         # Solve QP
         problem = cp.Problem(cp.Minimize(cost), constraints)
+        problem.solve(solver=cp.OSQP, verbose=False)
         
-        try:
-            problem.solve(solver=cp.OSQP, verbose=False)
-            
-            if problem.status != cp.OPTIMAL:
-                print(f"Warning: QP status = {problem.status}, using desired accelerations")
-                return acc_desired
-            
-            acc_safe = a.value
-            
-            # Track solve time
-            solve_time = time.time() - start_time
-            self.qp_solve_times.append(solve_time)
-            
-            return acc_safe
-            
-        except Exception as e:
-            print(f"CBF-QP solve failed: {e}")
-            print("Falling back to desired accelerations (UNSAFE)")
+        if problem.status != cp.OPTIMAL:
+            print(f"Warning: QP status = {problem.status}")
             return acc_desired
+        
+        return a.value
     
     def _inter_drone_cbf_constraint(self, 
                                    i: int, 
@@ -235,3 +215,70 @@ class CBFSafetyFilter:
             "total_solves": len(self.qp_solve_times),
             "constraint_violations": self.constraint_violations
         }
+        
+class GraphCBFSafetyFilter:
+    """
+    Graph-based CBF without neural networks.
+    Uses sensing radius to define neighbor graph.
+    """
+    
+    def __init__(self, 
+                 n_drones: int,
+                 safety_distance: float = 1.0,
+                 sensing_radius: float = 5.0,  # NEW: sensing radius R
+                 obstacle_margin: float = 0.5,
+                 alpha1: float = 2.0,
+                 alpha2: float = 1.0,
+                 max_acceleration: float = 5.0):
+        
+        self.n_drones = n_drones
+        self.d_safe = safety_distance
+        self.R_sense = sensing_radius  # Sensing radius
+        self.obs_margin = obstacle_margin
+        self.alpha1 = alpha1
+        self.alpha2 = alpha2
+        self.a_max = max_acceleration
+        
+    def get_neighbors(self, i: int, positions: np.ndarray) -> List[int]:
+        """
+        Get neighbors of agent i within sensing radius R.
+        This creates the graph structure.
+        
+        Returns:
+            List of neighbor indices (excluding i itself)
+        """
+        neighbors = []
+        p_i = positions[i]
+        
+        for j in range(self.n_drones):
+            if i == j:
+                continue
+            p_j = positions[j]
+            dist = np.linalg.norm(p_i - p_j)
+            
+            # Only consider agents within sensing radius
+            if dist <= self.R_sense:
+                neighbors.append(j)
+                
+        return neighbors
+    
+    def compute_minimum_sensing_radius(self, gamma: float, v_max: float) -> float:
+        """
+        Compute minimum sensing radius for safety guarantees.
+        
+        From Borrmann et al. 2015 paper:
+        D_N = D_s + (1/(2*Δa_max)) * (sqrt(2*Δa_max/γ) + Δv_max)^2
+        
+        Where:
+        - D_s: safety distance
+        - Δa_max: maximum relative braking acceleration
+        - γ: CBF decay rate
+        - Δv_max: maximum relative velocity
+        """
+        delta_a_max = 2 * self.a_max  # Both agents braking
+        delta_v_max = 2 * v_max
+        
+        D_N = self.d_safe + (1/(2*delta_a_max)) * \
+            (np.sqrt(2*delta_a_max/gamma) + delta_v_max)**2
+        
+        return D_N
