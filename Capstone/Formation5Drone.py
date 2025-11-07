@@ -5,6 +5,19 @@ from mpl_toolkits.mplot3d import Axes3D
 import networkx as nx
 from network_agent import DynamicAgent
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+import time
+
+
+# Visualization toggles
+# -----------------------------------------------------------
+# VIS_GRAPH: Shows static graph snapshots (nodes = drones, edges = neighbors)
+# VIS_BARRIERS:Plots the evolution of pairwise barrier functions h_ij(t)
+# VIS_SPHERES: Shows 3D animation with safety spheres (radius = d_safe)
+# -----------------------------------------------------------
+VIS_GRAPH = True
+VIS_BARRIERS = True
+VIS_SPHERES = True
 
 class DroneAgent(DynamicAgent):
     """
@@ -170,6 +183,93 @@ class DroneAgent(DynamicAgent):
         
         return np.linalg.norm(self.position - ideal_pos)
 
+# =============== Utility Animation Functions ===============
+
+def animate_safety_spheres(agents, cbf_filter):
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from matplotlib.animation import FuncAnimation
+
+    fig = plt.figure(figsize=(8,8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_title("3D Safety Spheres (d_safe zones)")
+    n = len(agents)
+    scatters = [ax.plot([], [], [], 'o', label=f'Agent {i}')[0] for i in range(n)]
+    T = len(agents[0].position_hist)
+
+    # Draw safety zones as spheres
+    u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+    x_s = cbf_filter.d_safe*np.cos(u)*np.sin(v)
+    y_s = cbf_filter.d_safe*np.sin(u)*np.sin(v)
+    z_s = cbf_filter.d_safe*np.cos(v)
+    spheres = [ax.plot_surface(x_s, y_s, z_s, alpha=0.05, color='r') for _ in range(n)]
+
+    def update(frame):
+        ax.clear()
+        ax.set_xlim(-2, 2)
+        ax.set_ylim(-2, 2)
+        ax.set_zlim(0, 3)
+        ax.set_title(f"Safety Spheres at t={frame * agents[0].dt:.2f}s")
+        for i, agent in enumerate(agents):
+            p = agent.position_hist[frame]
+            ax.scatter(*p, label=f"A{i}")
+            # draw sphere
+            ax.plot_surface(x_s + p[0], y_s + p[1], z_s + p[2], alpha=0.1, color='r')
+        return scatters
+
+    anim = FuncAnimation(fig, update, frames=range(0, T, 5), interval=100)
+    plt.show()
+
+
+def plot_barrier_functions(agents, cbf_filter):
+    import matplotlib.pyplot as plt
+    n = len(agents)
+    T = len(agents[0].position_hist)
+    time = np.arange(T) * agents[0].dt
+
+    plt.figure(figsize=(10,6))
+    for i in range(n):
+        for j in range(i+1, n):
+            h_vals = [
+                np.linalg.norm(agents[i].position_hist[k] - agents[j].position_hist[k])**2 - cbf_filter.d_safe**2
+                for k in range(T)
+            ]
+            plt.plot(time, h_vals, label=f"h_{i}{j}")
+    plt.axhline(0, color='k', linestyle='--', label='Safety boundary')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Barrier Function $h_{ij}(t)$')
+    plt.title('Pairwise GCBF Safety Functions Over Time')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+def visualize_graph_snapshots(agents, cbf_filter, snapshots=[0, -1]):
+    import networkx as nx
+    import matplotlib.pyplot as plt
+    n = len(agents)
+    dt = agents[0].dt
+    for idx in snapshots:
+        pos = np.array([a.position_hist[idx] for a in agents])
+        G = nx.Graph()
+        G.add_nodes_from(range(n))
+        for i in range(n):
+            for j in range(i+1, n):
+                dist = np.linalg.norm(pos[i] - pos[j])
+                if dist < cbf_filter.R_sense:
+                    color = 'r' if dist < cbf_filter.d_safe * 1.1 else 'gray'
+                    G.add_edge(i, j, color=color)
+        plt.figure(figsize=(6,6))
+        colors = [G[u][v]['color'] for u,v in G.edges()]
+        nx.draw(G, pos={i: pos[i,:2] for i in range(n)}, node_color='skyblue',
+                with_labels=True, edge_color=colors, node_size=500)
+        plt.title(f"Agent Graph at t = {idx * dt:.2f}s")
+        plt.axis('equal')
+        plt.show()
+
+
+
+
 
 # ==================== SIMULATION FUNCTIONS ====================
 
@@ -259,6 +359,8 @@ def run_formation_with_cbf(n_agents=5, max_iter=500, dt=0.1, use_cbf=True, anima
         plt.ion()  # Turn on interactive mode
         fig = plt.figure(figsize=(14, 10))
         ax = fig.add_subplot(111, projection='3d')
+        
+        
         
         # Generate colors for each drone
         colors = plt.cm.rainbow(np.linspace(0, 1, n_agents))
@@ -426,7 +528,7 @@ def run_formation_with_cbf(n_agents=5, max_iter=500, dt=0.1, use_cbf=True, anima
             
             # Update display
             plt.draw()
-            plt.pause(0.001)
+            plt.pause(0.01)
         # ==================== END ANIMATION UPDATE ====================
         
         
@@ -442,10 +544,26 @@ def run_formation_with_cbf(n_agents=5, max_iter=500, dt=0.1, use_cbf=True, anima
                   f"Formation error: avg={avg_error:.3f}m, max={max_error:.3f}m, "
                   f"Avg velocity: {avg_vel:.3f}m/s")
     
+    
+    # Optional visualization calls (only if CBF filter is active)
+    if use_cbf and cbf_filter is not None:
+        if VIS_GRAPH:
+            visualize_graph_snapshots(agents, cbf_filter, [0, max_iter // 2, -1])
+        if VIS_BARRIERS:
+            plot_barrier_functions(agents, cbf_filter)
+        if VIS_SPHERES:
+            animate_safety_spheres(agents, cbf_filter)
+    else:
+        print("\n[INFO] Skipping CBF visualizations — CBF filter disabled.")
+
+
+    
     # Print final statistics
     print(f"\n{'='*60}")
     print("SIMULATION COMPLETE")
     print(f"{'='*60}")
+    
+
     
     # Close animation and keep final frame
     if animate:
@@ -645,6 +763,8 @@ def compare_with_without_cbf():
     return agents_no_cbf, agents_with_cbf
 
 
+
+
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
@@ -652,8 +772,8 @@ if __name__ == "__main__":
     agents, cbf_stats = run_formation_with_cbf(
         n_agents=5,
         max_iter=500,
-        dt=0.1,
-        use_cbf=False,  # Set to False to test without CBF
+        dt=0.05,
+        use_cbf=True,  # Set to False to test without CBF
         animate=True
     )
     
