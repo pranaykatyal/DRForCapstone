@@ -24,6 +24,7 @@ VIS_2D_TOPVIEW = True
 FOCUS_AGENT = 1  # Default to Agent 0 for GCBF visualization
 CONVERGENCE_THRESHOLD = 0.05  # Stop when all agents within 5cm of ideal positions
 CONVERGENCE_VELOCITY = 0.01  # And velocity below 1cm/s
+NUM_AGENTS = 5 # min 3 
 
 class DroneAgent(DynamicAgent):
     """
@@ -69,7 +70,7 @@ class DroneAgent(DynamicAgent):
         Control Law: PD control to desired position with saturation
         """
         # Compute assigned position in formation (pentagon)
-        n_agents = 5
+        n_agents = NUM_AGENTS
         assigned_angle = (2 * np.pi * self.id) / n_agents
         
         # Formation in XY plane at target Z height
@@ -120,7 +121,7 @@ class DroneAgent(DynamicAgent):
     
     def get_formation_error(self):
         """Compute distance from ideal formation position."""
-        n_agents = 5
+        n_agents = NUM_AGENTS
         assigned_angle = (2 * np.pi * self.id) / n_agents
         
         ideal_pos = self.target_pos + self.formation_radius * np.array([
@@ -196,7 +197,7 @@ def plot_barrier_functions(agents, cbf_filter, focus_agent=FOCUS_AGENT):
 
 # ==================== SIMULATION FUNCTION ====================
 
-def run_formation_with_cbf(n_agents=5, max_iter=500, dt=0.1, use_cbf=True, animate=True):
+def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=True, animate=True):
     """
     Run formation control simulation with optional CBF safety filter.
     
@@ -933,13 +934,13 @@ def compare_with_without_cbf():
     # Run without CBF
     print("\n--- Running WITHOUT CBF ---")
     agents_no_cbf, _ = run_formation_with_cbf(
-        n_agents=5, max_iter=1000, dt=0.1, use_cbf=False, animate=False
+        n_agents=NUM_AGENTS, max_iter=1000, dt=0.1, use_cbf=False, animate=False
     )
     
     # Run with CBF
     print("\n--- Running WITH CBF ---")
     agents_with_cbf, cbf_stats = run_formation_with_cbf(
-        n_agents=5, max_iter=1000, dt=0.1, use_cbf=True, animate=False
+        n_agents=NUM_AGENTS, max_iter=1000, dt=0.1, use_cbf=True, animate=False
     )
     
     # Compare results
@@ -984,9 +985,9 @@ def compare_with_without_cbf():
 if __name__ == "__main__":
     # Option 1: Run with CBF and all visualizations
     agents, cbf_stats = run_formation_with_cbf(
-        n_agents=5,
-        max_iter=2000,  # Increased to allow convergence detection
-        dt=0.05,
+        n_agents=NUM_AGENTS,
+        max_iter=1000,  # Increased to allow convergence detection
+        dt=0.02,
         use_cbf=True,  
         animate=True
     )
