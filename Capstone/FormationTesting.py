@@ -21,10 +21,55 @@ logging.getLogger('matplotlib.axes._base').setLevel(logging.ERROR)
 VIS_GRAPH_OVERLAY = True
 VIS_BARRIERS = True
 VIS_2D_TOPVIEW = True
-FOCUS_AGENT = 1  # Default to Agent 0 for GCBF visualization
+FOCUS_AGENT = 0  # Default to Agent 0 for GCBF visualization
 CONVERGENCE_THRESHOLD = 0.05  # Stop when all agents within 5cm of ideal positions
 CONVERGENCE_VELOCITY = 0.01  # And velocity below 1cm/s
 NUM_AGENTS = 5 # min 3 
+
+# Target and Formation Parameters
+TARGET_TIME = 25.0  # Time for target to complete trajectory (seconds)
+FORMATION_RADIUS = 5.0  # Formation radius in meters
+
+# =============== Moving Target Class ===============
+
+class MovingTarget:
+    """Moving target that drones track while maintaining formation."""
+    
+    def __init__(self, start_pos, end_pos, duration, dt=0.1):
+        """
+        Args:
+            start_pos: Starting position [x, y, z]
+            end_pos: Ending position [x, y, z]
+            duration: Time to complete trajectory (seconds)
+            dt: Timestep
+        """
+        self.position = np.array(start_pos, dtype=float)
+        self.start_pos = np.array(start_pos, dtype=float)
+        self.end_pos = np.array(end_pos, dtype=float)
+        self.duration = duration
+        self.dt = dt
+        self.time = 0.0
+        
+        # Constant velocity motion
+        self.velocity = (self.end_pos - self.start_pos) / self.duration
+        
+        # History
+        self.position_hist = [self.position.copy()]
+        self.velocity_hist = [self.velocity.copy()]
+    
+    def update(self):
+        """Update target position."""
+        self.time += self.dt
+        
+        if self.time * np.linalg.norm(self.velocity) < np.linalg.norm(self.end_pos - self.start_pos):
+            self.position = self.position + self.velocity * self.dt
+        else:
+            # Reached end, stop moving
+            self.velocity = np.zeros(3)
+            self.position = self.end_pos.copy()
+        
+        self.position_hist.append(self.position.copy())
+        self.velocity_hist.append(self.velocity.copy())
 
 class DroneAgent(DynamicAgent):
     """
@@ -67,7 +112,7 @@ class DroneAgent(DynamicAgent):
     def compute_desired_acceleration(self):
         """
         Compute nominal acceleration from formation control law.
-        Control Law: PD control to desired position with saturation
+        Control Law: Track target while maintaining safe formation spacing
         """
         # Compute assigned position in formation (pentagon)
         n_agents = NUM_AGENTS
@@ -80,12 +125,42 @@ class DroneAgent(DynamicAgent):
             0.0  # Formation stays in horizontal plane
         ])
         
+        # Adaptive weighting based on distance to center
+        formation_center = self.target_pos
+        dist_to_center = np.linalg.norm(self.position - formation_center)
+        
+        # Scale thresholds relative to formation_radius
+        far_threshold = 3.0 * self.formation_radius      # 15m for 5m radius
+        approaching_threshold = 2.0 * self.formation_radius  # 10m
+        near_threshold = 1.2 * self.formation_radius     # 6m (just outside formation)
+        
+        if dist_to_center > far_threshold:
+            # Very far: chase aggressively
+            center_weight = 0.9
+            formation_weight = 0.1
+        elif dist_to_center > approaching_threshold:
+            # Far: mostly chase
+            center_weight = 0.7
+            formation_weight = 0.3
+        elif dist_to_center > near_threshold:
+            # Approaching: balanced
+            center_weight = 0.5
+            formation_weight = 0.5
+        else:
+            # **FIXED**: When close, ONLY track formation position
+            center_weight = 0.0
+            formation_weight = 1.0
+        
+        center_error = formation_center - self.position
+        formation_error = desired_pos - self.position
+        
+        combined_error = center_weight * center_error + formation_weight * formation_error
+        
         # PD control: acc = Kp*(pos_error) + Kd*(vel_error)
-        pos_error = desired_pos - self.position
         vel_error = -self.velocity  # Desired velocity = 0 (hover in formation)
         
         # Compute PD control law
-        acc_desired = self.Kp * pos_error + self.Kd * vel_error
+        acc_desired = self.Kp * combined_error + self.Kd * vel_error
         
         # Saturate acceleration to physical limits (even without CBF)
         acc_norm = np.linalg.norm(acc_desired)
@@ -197,7 +272,8 @@ def plot_barrier_functions(agents, cbf_filter, focus_agent=FOCUS_AGENT):
 
 # ==================== SIMULATION FUNCTION ====================
 
-def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=True, animate=True):
+def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=True, animate=True,
+                           moving_target=True):
     """
     Run formation control simulation with optional CBF safety filter.
     
@@ -207,9 +283,11 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         dt: Timestep in seconds
         use_cbf: Whether to use CBF safety filter
         animate: Whether to animate the simulation
+        moving_target: Whether target should move
     
     Returns:
         agents: List of DroneAgent objects with trajectory history
+        target: MovingTarget object (or None if static)
         cbf_stats: CBF statistics (if use_cbf=True), else None
     """
     # Import CBF filter if needed
@@ -226,10 +304,10 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
     if use_cbf:
         cbf_filter = GraphCBFSafetyFilter(
             n_drones=n_agents,
-            safety_distance=1.5,      # Minimum 1.5m between drones
+            safety_distance=2.0,      # Minimum 1.5m between drones
             sensing_radius=8.0,       # Detect neighbors within 8m
-            alpha1=2.0,               # CBF responsiveness
-            alpha2=1.0,               # CBF convergence rate
+            alpha1=3.0,               # CBF responsiveness
+            alpha2=2.5,               # CBF convergence rate
             max_acceleration=5.0      # Physical limit
         )
         
@@ -244,9 +322,20 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             print(f"⚠️  WARNING: Using R={cbf_filter.R_sense}m < {R_min:.2f}m")
             print("   Safety not guaranteed! Increase sensing_radius.")
     
-    # Initialize agents
-    target_pos = np.array([0.0, 0.0, 2.0])  # Formation center
-    formation_radius = 5.0
+    # Initialize target
+    formation_radius = FORMATION_RADIUS  # Use global parameter
+    
+    if moving_target:
+        target = MovingTarget(
+            start_pos=np.array([0.0, 0.0, 0.0]),
+            end_pos=np.array([50.0, 50.0, 10.0]),
+            duration=TARGET_TIME,  # Use global parameter
+            dt=dt
+        )
+        print(f"Moving target: {target.start_pos} → {target.end_pos} over {target.duration}s")
+    else:
+        target = None
+        target_pos = np.array([0.0, 0.0, 2.0])
     
     agents = []
     np.random.seed(42)  # Reproducibility
@@ -255,12 +344,13 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
     print(f"Formation Control Simulation")
     print(f"{'='*60}")
     print(f"Agents: {n_agents}")
-    print(f"Target: {target_pos}")
+    print(f"Target: {'MOVING' if moving_target else 'STATIC'}")
     print(f"Formation radius: {formation_radius}m")
     print(f"CBF enabled: {use_cbf}")
     print(f"Timestep: {dt}s, Max Duration: {max_iter*dt:.1f}s")
     print(f"Controller: PD with Kp=0.5, Kd=1.2 (tuned to reduce overshoot)")
-    print(f"Saturation: max_vel=3.0 m/s, max_acc=2.0 m/s²")
+    print(f"Saturation: max_vel=5.0 m/s, max_acc=4.0 m/s²")
+    print(f"Target Sensing: 15.0m direct, consensus with neighbors beyond")
     print(f"Convergence threshold: {CONVERGENCE_THRESHOLD:.2f}m")
     print(f"Focus Agent for GCBF: {FOCUS_AGENT if FOCUS_AGENT >= 0 else 'All'}")
     print(f"{'='*60}\n")
@@ -270,16 +360,18 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         init_pos = np.random.uniform(-10, 10, 3)
         init_pos[2] = np.random.uniform(1, 3)  # Reasonable altitude
         
+        current_target_pos = target.position if moving_target else target_pos
+        
         agents.append(DroneAgent(
             id=i,
             state_3d=init_pos,
-            target_pos_3d=target_pos,
+            target_pos_3d=current_target_pos,
             formation_radius=formation_radius,
-            Kp=0.5,  # Reduced from 1.0 to prevent overshoot
-            Kd=1.2,  # Increased from 0.5 for better damping
+            Kp=0.5,
+            Kd=1.2,
             dt=dt,
-            max_velocity=3.0,  # Add velocity saturation
-            max_acceleration=2.0  # Add acceleration saturation
+            max_velocity=5.0,  # Increased from 3.0 to 5.0 m/s
+            max_acceleration=4.0  # Increased from 2.0 to 4.0 m/s²
         ))
         print(f"Agent {i} initialized at: {init_pos} with zero initial velocity")
     
@@ -307,28 +399,33 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                                   edgecolors='black', linewidths=2)
         
         # Plot target position
-        ax.scatter(target_pos[0], target_pos[1], target_pos[2], 
+        current_target_pos = target.position if moving_target else target_pos
+        target_scatter = ax.scatter(current_target_pos[0], current_target_pos[1], current_target_pos[2], 
                   c='red', marker='X', s=500, edgecolors='black', linewidths=2,
                   label='Target')
         
+        # Target trajectory line
+        if moving_target:
+            target_traj_line, = ax.plot([], [], [], 'r--', linewidth=2, alpha=0.5, label='Target Path')
+        
         # Plot ideal formation positions (green X's)
-        ideal_positions = []
+        ideal_markers = []
         for i in range(n_agents):
             angle = (2 * np.pi * i) / n_agents
-            ideal_pos = target_pos + formation_radius * np.array([
+            ideal_pos = current_target_pos + formation_radius * np.array([
                 np.cos(angle), np.sin(angle), 0.0
             ])
-            ideal_positions.append(ideal_pos)
-            ax.scatter(ideal_pos[0], ideal_pos[1], ideal_pos[2],
+            marker = ax.scatter(ideal_pos[0], ideal_pos[1], ideal_pos[2],
                       c='green', marker='x', s=200, alpha=0.5,
                       edgecolors='orange', linewidths=2)
+            ideal_markers.append(marker)
         
         # Draw formation circle
         theta = np.linspace(0, 2*np.pi, 50)
-        circle_x = target_pos[0] + formation_radius * np.cos(theta)
-        circle_y = target_pos[1] + formation_radius * np.sin(theta)
-        circle_z = np.ones_like(theta) * target_pos[2]
-        ax.plot(circle_x, circle_y, circle_z, 'g--', alpha=0.3, linewidth=2)
+        circle_x = current_target_pos[0] + formation_radius * np.cos(theta)
+        circle_y = current_target_pos[1] + formation_radius * np.sin(theta)
+        circle_z = np.ones_like(theta) * current_target_pos[2]
+        formation_circle, = ax.plot(circle_x, circle_y, circle_z, 'g--', alpha=0.3, linewidth=2)
         
         # Initialize trajectory lines for each drone
         trajectory_lines = []
@@ -355,7 +452,6 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         # ========== 2D TOP VIEW SETUP ==========
         if VIS_2D_TOPVIEW and ax2d is not None:
             # Initialize 2D drone positions
-            # Initialize with agents' starting positions
             x_init = [a.position[0] for a in agents]
             y_init = [a.position[1] for a in agents]
 
@@ -365,26 +461,26 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             )
                         
             # Plot target in 2D
-            ax2d.scatter(target_pos[0], target_pos[1], 
+            target_scatter_2d = ax2d.scatter(current_target_pos[0], current_target_pos[1], 
                        c='red', marker='X', s=500, edgecolors='black', linewidths=2, zorder=5)
             
+            if moving_target:
+                target_traj_line_2d, = ax2d.plot([], [], 'r--', linewidth=2, alpha=0.5, zorder=1)
+            
             # Plot ideal positions in 2D with agent labels
+            ideal_markers_2d = []
             for i in range(n_agents):
                 angle = (2 * np.pi * i) / n_agents
-                ideal_x = target_pos[0] + formation_radius * np.cos(angle)
-                ideal_y = target_pos[1] + formation_radius * np.sin(angle)
-                ax2d.scatter(ideal_x, ideal_y, c='green', marker='x', s=300, 
+                ideal_x = current_target_pos[0] + formation_radius * np.cos(angle)
+                ideal_y = current_target_pos[1] + formation_radius * np.sin(angle)
+                marker = ax2d.scatter(ideal_x, ideal_y, c='green', marker='x', s=300, 
                            alpha=0.5, edgecolors='orange', linewidths=3, zorder=4)
+                ideal_markers_2d.append(marker)
                 ax2d.text(ideal_x, ideal_y + 0.7, f'Pos{i}', fontsize=9, 
                         ha='center', color='orange', weight='bold')
             
             # Draw formation circle in 2D
-            ax2d.plot(circle_x, circle_y, 'g--', alpha=0.3, linewidth=2, zorder=1)
-            
-            # Initialize sensing and safety circles (will be updated in loop)
-            sensing_circle = None
-            safety_circle = None
-            safety_circle_edge = None
+            formation_circle_2d, = ax2d.plot(circle_x, circle_y, 'g--', alpha=0.3, linewidth=2, zorder=1)
             
             # Initialize 2D trajectory lines
             trajectory_lines_2d = []
@@ -425,6 +521,36 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
     convergence_patience = 20  # Must be converged for this many iterations
     
     for iteration in range(max_iter):
+        # Step 0: Update moving target
+        if moving_target:
+            target.update()
+            
+            # Each agent updates target estimate based on sensing + consensus
+            for agent in agents:
+                # Check if target is within sensing range
+                dist_to_target = np.linalg.norm(agent.position - target.position)
+                target_sensing_range = 15.0  # Can directly sense target within 15m
+                
+                if dist_to_target < target_sensing_range:
+                    # Direct sensing: update to true target position
+                    agent.target_pos = target.position.copy()
+                else:
+                    # Out of range: use consensus with neighbors
+                    # Collect target estimates from neighbors within communication range
+                    neighbor_estimates = []
+                    for other_agent in agents:
+                        if other_agent.id != agent.id:
+                            dist_to_neighbor = np.linalg.norm(agent.position - other_agent.position)
+                            if dist_to_neighbor < 8.0:  # Within communication range
+                                neighbor_estimates.append(other_agent.target_pos)
+                    
+                    if len(neighbor_estimates) > 0:
+                        # Average neighbor estimates (simple consensus)
+                        consensus_estimate = np.mean(neighbor_estimates, axis=0)
+                        # Blend own estimate with consensus (80% consensus, 20% own)
+                        agent.target_pos = 0.8 * consensus_estimate + 0.2 * agent.target_pos
+                    # else: keep last known target position
+        
         # Step 1: Each agent computes DESIRED acceleration
         acc_desired = np.zeros((n_agents, 3))
         for i, agent in enumerate(agents):
@@ -464,8 +590,29 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         avg_vel = np.mean([np.linalg.norm(a.velocity) for a in agents])
         max_vel = np.max([np.linalg.norm(a.velocity) for a in agents])
         
-        # Check if converged
-        if max_error < CONVERGENCE_THRESHOLD and max_vel < CONVERGENCE_VELOCITY:
+        # Track formation center vs target error
+        formation_center = np.mean([agent.position for agent in agents], axis=0)
+        if moving_target:
+            center_to_target_error = np.linalg.norm(formation_center - target.position)
+        else:
+            center_to_target_error = np.linalg.norm(formation_center - target_pos)
+        
+        # Store for plotting later
+        if not hasattr(agents[0], 'center_error_hist'):
+            for agent in agents:
+                agent.center_error_hist = []
+        for agent in agents:
+            agent.center_error_hist.append(center_to_target_error)
+        
+        # For moving target: only check convergence after target has stopped
+        target_stopped = False
+        if moving_target:
+            target_stopped = (np.linalg.norm(target.velocity) < 0.01)
+        else:
+            target_stopped = True  # Static target is always "stopped"
+        
+        # Check if converged (only after target stops)
+        if target_stopped and max_error < CONVERGENCE_THRESHOLD and max_vel < CONVERGENCE_VELOCITY:
             convergence_count += 1
             if convergence_count >= convergence_patience:
                 converged = True
@@ -493,6 +640,29 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 traj = np.array(agent.position_hist)
                 trajectory_lines[i].set_data(traj[:, 0], traj[:, 1])
                 trajectory_lines[i].set_3d_properties(traj[:, 2])
+            
+            # Update target
+            if moving_target:
+                current_target_pos = target.position
+                target_scatter._offsets3d = ([current_target_pos[0]], [current_target_pos[1]], [current_target_pos[2]])
+                
+                # Update target trajectory
+                traj_target = np.array(target.position_hist)
+                target_traj_line.set_data(traj_target[:, 0], traj_target[:, 1])
+                target_traj_line.set_3d_properties(traj_target[:, 2])
+                
+                # Update ideal positions
+                for i, marker in enumerate(ideal_markers):
+                    angle = (2 * np.pi * i) / n_agents
+                    ideal_pos = current_target_pos + formation_radius * np.array([np.cos(angle), np.sin(angle), 0.0])
+                    marker._offsets3d = ([ideal_pos[0]], [ideal_pos[1]], [ideal_pos[2]])
+                
+                # Update formation circle
+                circle_x = current_target_pos[0] + formation_radius * np.cos(theta)
+                circle_y = current_target_pos[1] + formation_radius * np.sin(theta)
+                circle_z = np.ones_like(theta) * current_target_pos[2]
+                formation_circle.set_data(circle_x, circle_y)
+                formation_circle.set_3d_properties(circle_z)
             
             # Update velocity vectors
             if quiver is not None:
@@ -578,6 +748,21 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 for i, agent in enumerate(agents):
                     traj = np.array(agent.position_hist)
                     trajectory_lines_2d[i].set_data(traj[:, 0], traj[:, 1])
+                
+                # Update target in 2D
+                if moving_target:
+                    target_scatter_2d.set_offsets([[current_target_pos[0], current_target_pos[1]]])
+                    target_traj_line_2d.set_data(traj_target[:, 0], traj_target[:, 1])
+                    
+                    # Update ideal positions in 2D
+                    for i, marker in enumerate(ideal_markers_2d):
+                        angle = (2 * np.pi * i) / n_agents
+                        ideal_x = current_target_pos[0] + formation_radius * np.cos(angle)
+                        ideal_y = current_target_pos[1] + formation_radius * np.sin(angle)
+                        marker.set_offsets([[ideal_x, ideal_y]])
+                    
+                    # Update formation circle 2D
+                    formation_circle_2d.set_data(circle_x, circle_y)
                 
                 # Update sensing/safety circles for focused agent
                 if use_cbf and FOCUS_AGENT >= 0 and FOCUS_AGENT < n_agents:
@@ -667,16 +852,27 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 # Update 2D view limits dynamically
                 all_x = current_positions[:, 0]
                 all_y = current_positions[:, 1]
-                margin = 5.0
-                ax2d.set_xlim(min(all_x.min()-margin, -15), max(all_x.max()+margin, 15))
-                ax2d.set_ylim(min(all_y.min()-margin, -15), max(all_y.max()+margin, 15))
+                if moving_target:
+                    all_x = np.append(all_x, current_target_pos[0])
+                    all_y = np.append(all_y, current_target_pos[1])
+                
+                # Keep view centered on action
+                margin = 10.0  # Larger margin to see GCBF sensing circles
+                x_center = np.mean(all_x)
+                y_center = np.mean(all_y)
+                x_range = max(15.0, (all_x.max() - all_x.min()) / 2 + margin)
+                y_range = max(15.0, (all_y.max() - all_y.min()) / 2 + margin)
+                
+                ax2d.set_xlim(x_center - x_range, x_center + x_range)
+                ax2d.set_ylim(y_center - y_range, y_center + y_range)
             
             # Update info text
             avg_acc = np.mean([np.linalg.norm(a.acceleration) for a in agents])
             info_text.set_text(
                 f"Iteration: {iteration:04d}\n"
-                f"Avg error: {avg_error:.3f} m\n"
-                f"Max error: {max_error:.3f} m\n"
+                f"Center→Target: {center_to_target_error:.3f} m\n"
+                f"Avg form error: {avg_error:.3f} m\n"
+                f"Max form error: {max_error:.3f} m\n"
                 f"Avg vel: {avg_vel:.3f} m/s\n"
                 f"Max vel: {max_vel:.3f} m/s\n"
                 f"Avg acc: {avg_acc:.3f} m/s²"
@@ -685,50 +881,27 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             # Pause briefly for animation smoothness
             plt.pause(0.001)
             
-            # Check minimum distance between drones
-            min_dist = float('inf')
-            for i in range(n_agents):
-                for j in range(i+1, n_agents):
-                    dist = np.linalg.norm(agents[i].position - agents[j].position)
-                    min_dist = min(min_dist, dist)
-            
-            status = " CONVERGED" if converged else " CONVERGING..."
-            info_str = (f"{status}\n"
-                       f"Iteration: {iteration}/{max_iter}\n"
-                       f"Time: {iteration*dt:.1f}s / {max_iter*dt:.1f}s\n"
-                       f"Formation Error:\n"
-                       f"  Avg: {avg_error:.3f}m\n"
-                       f"  Max: {max_error:.3f}m (goal < {CONVERGENCE_THRESHOLD}m)\n"
-                       f"Velocity:\n"
-                       f"  Avg: {avg_vel:.3f}m/s\n"
-                       f"  Max: {max_vel:.3f}m/s (goal < {CONVERGENCE_VELOCITY}m/s)\n"
-                       f"Avg Acceleration: {avg_acc:.3f}m/s²\n"
-                       f"Min Distance: {min_dist:.3f}m")
-            
-            if use_cbf:
-                stats = cbf_filter.get_statistics()
-                if stats.get('total_solves', 0) > 0:
-                    activation_rate = stats.get('activation_rate', 0)
-                    info_str += f"\nCBF Active: {activation_rate*100:.1f}%"
-                    if cbf_filter.d_safe:
-                        info_str += f"\nSafety Distance: {cbf_filter.d_safe:.2f}m"
-            
-            # Add graph connectivity info
-            if VIS_GRAPH_OVERLAY and use_cbf:
-                n_edges = len(graph_lines)
-                info_str += f"\nGraph Edges: {n_edges}"
-            
-            # info_text.set_text(info_str)
-            
             # Dynamically adjust 3D view limits
             all_x = current_positions[:, 0]
             all_y = current_positions[:, 1]
             all_z = current_positions[:, 2]
+            if moving_target:
+                all_x = np.append(all_x, current_target_pos[0])
+                all_y = np.append(all_y, current_target_pos[1])
+                all_z = np.append(all_z, current_target_pos[2])
             
-            margin = 3.0
-            ax.set_xlim(min(all_x.min()-margin, -15), max(all_x.max()+margin, 15))
-            ax.set_ylim(min(all_y.min()-margin, -15), max(all_y.max()+margin, 15))
-            ax.set_zlim(max(0, all_z.min()-margin), all_z.max()+margin)
+            # Keep view centered on drones with reasonable margin
+            margin = 8.0  # Increased margin to see GCBF circles
+            x_center = np.mean(all_x)
+            y_center = np.mean(all_y)
+            z_center = np.mean(all_z)
+            x_range = max(15.0, (all_x.max() - all_x.min()) / 2 + margin)
+            y_range = max(15.0, (all_y.max() - all_y.min()) / 2 + margin)
+            z_range = max(8.0, (all_z.max() - all_z.min()) / 2 + margin)
+            
+            ax.set_xlim(x_center - x_range, x_center + x_range)
+            ax.set_ylim(y_center - y_range, y_center + y_range)
+            ax.set_zlim(max(0, z_center - z_range), z_center + z_range)
             
             # Update display
             plt.draw()
@@ -743,8 +916,9 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         # Step 5: Progress reporting
         if iteration % 50 == 0:
             print(f"Iter {iteration:3d}: "
+                  f"Center→Target: {center_to_target_error:.3f}m, "
                   f"Formation error: avg={avg_error:.3f}m, max={max_error:.3f}m, "
-                  f"Avg vel: {avg_vel:.3f}m/s, Avg acc: {avg_acc:.3f}m/s²")
+                  f"Avg vel: {avg_vel:.3f}m/s")
         
         # Exit loop if converged (for non-animated case)
         if converged and not animate:
@@ -796,15 +970,16 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         print(f"\n⚠️  Formation did not converge within {max_iter} iterations")
     
     cbf_stats = cbf_filter.get_statistics() if use_cbf else None
-    return agents, cbf_stats
+    return agents, target, cbf_stats
 
 
-def plot_results_3d(agents):
+def plot_results_3d(agents, target=None):
     """
     Visualize 3D trajectories and final formation.
     
     Args:
         agents: List of DroneAgent objects with history
+        target: MovingTarget object or None
     """
     n_agents = len(agents)
     
@@ -826,10 +1001,15 @@ def plot_results_3d(agents):
         ax1.scatter(traj[-1, 0], traj[-1, 1], traj[-1, 2], 
                    color=colors[i], marker='*', s=200, edgecolors='black')
     
-    # Mark target
-    target = agents[0].target_pos
-    ax1.scatter(target[0], target[1], target[2], 
-               color='red', marker='x', s=300, linewidths=3, label='Target')
+    # Plot target trajectory
+    if target is not None:
+        traj_target = np.array(target.position_hist)
+        ax1.plot(traj_target[:, 0], traj_target[:, 1], traj_target[:, 2],
+                'r--', linewidth=3, alpha=0.6, label='Target')
+        ax1.scatter(traj_target[0, 0], traj_target[0, 1], traj_target[0, 2],
+                   color='red', marker='X', s=200, edgecolors='black')
+        ax1.scatter(traj_target[-1, 0], traj_target[-1, 1], traj_target[-1, 2],
+                   color='darkred', marker='X', s=300, edgecolors='black')
     
     ax1.set_xlabel('X (m)', fontsize=10)
     ax1.set_ylabel('Y (m)', fontsize=10)
@@ -860,12 +1040,13 @@ def plot_results_3d(agents):
     
     # Draw formation circle
     theta = np.linspace(0, 2*np.pi, 100)
-    circle_x = target[0] + agent.formation_radius * np.cos(theta)
-    circle_y = target[1] + agent.formation_radius * np.sin(theta)
+    target_pos = agents[0].target_pos
+    circle_x = target_pos[0] + agents[0].formation_radius * np.cos(theta)
+    circle_y = target_pos[1] + agents[0].formation_radius * np.sin(theta)
     ax2.plot(circle_x, circle_y, 'k--', alpha=0.3, linewidth=2)
     
     # Mark target
-    ax2.plot(target[0], target[1], 'r+', markersize=20, markeredgewidth=3)
+    ax2.plot(target_pos[0], target_pos[1], 'r+', markersize=20, markeredgewidth=3)
     
     ax2.set_xlabel('X (m)', fontsize=10)
     ax2.set_ylabel('Y (m)', fontsize=10)
@@ -875,32 +1056,39 @@ def plot_results_3d(agents):
     ax2.legend(fontsize=8)
     ax2.grid(True, alpha=0.3)
     
-    # Plot 3: Formation Error Over Time
+    # Plot 3: Formation Center Error vs Target Over Time
     ax3 = fig.add_subplot(133)
     
     max_len = max(len(agent.position_hist) for agent in agents)
     time = np.arange(max_len) * agents[0].dt
     
+    # Plot formation center to target error (most important metric)
+    if hasattr(agents[0], 'center_error_hist'):
+        center_errors = agents[0].center_error_hist
+        ax3.plot(time[:len(center_errors)], center_errors, 'b-', 
+                linewidth=3, label='Formation Center → Target', alpha=0.8)
+    
+    # Plot individual formation errors (less important)
     for i, agent in enumerate(agents):
         errors = [np.linalg.norm(np.array(agent.position_hist[j]) - 
                                  (agent.target_pos + agent.formation_radius * np.array([
-                                     np.cos(2*np.pi*agent.id/n_agents),
-                                     np.sin(2*np.pi*agent.id/n_agents),
+                                     np.cos(2*np.pi*agent.id/NUM_AGENTS),
+                                     np.sin(2*np.pi*agent.id/NUM_AGENTS),
                                      0.0
                                  ])))
                  for j in range(len(agent.position_hist))]
         ax3.plot(time[:len(errors)], errors, color=colors[i], 
-                linewidth=2, label=f'Drone {agent.id}')
+                linewidth=1, alpha=0.3, label=f'Drone {agent.id} form error')
     
-    # Average error
+    # Average formation error
     avg_errors = []
     for t in range(max_len):
         errors_at_t = []
         for agent in agents:
             if t < len(agent.position_hist):
                 ideal = agent.target_pos + agent.formation_radius * np.array([
-                    np.cos(2*np.pi*agent.id/n_agents),
-                    np.sin(2*np.pi*agent.id/n_agents),
+                    np.cos(2*np.pi*agent.id/NUM_AGENTS),
+                    np.sin(2*np.pi*agent.id/NUM_AGENTS),
                     0.0
                 ])
                 error = np.linalg.norm(agent.position_hist[t] - ideal)
@@ -909,16 +1097,17 @@ def plot_results_3d(agents):
             avg_errors.append(np.mean(errors_at_t))
     
     ax3.plot(time[:len(avg_errors)], avg_errors, 'k--', 
-            linewidth=3, label='Average', alpha=0.7)
+            linewidth=2, label='Avg Formation Error', alpha=0.5)
     
     # Add convergence threshold line
     ax3.axhline(y=CONVERGENCE_THRESHOLD, color='r', linestyle=':', 
                linewidth=2, label=f'Convergence Threshold ({CONVERGENCE_THRESHOLD}m)')
     
     ax3.set_xlabel('Time (s)', fontsize=10)
-    ax3.set_ylabel('Formation Error (m)', fontsize=10)
-    ax3.set_title('Formation Error Over Time', fontsize=12, fontweight='bold')
-    ax3.legend(fontsize=8)
+    ax3.set_ylabel('Error (m)', fontsize=10)
+    ax3.set_title('Formation Center → Target Error (Primary)\nvs Individual Formation Errors', 
+                 fontsize=12, fontweight='bold')
+    ax3.legend(fontsize=7, loc='upper right')
     ax3.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -933,13 +1122,13 @@ def compare_with_without_cbf():
     
     # Run without CBF
     print("\n--- Running WITHOUT CBF ---")
-    agents_no_cbf, _ = run_formation_with_cbf(
+    agents_no_cbf, _, _ = run_formation_with_cbf(
         n_agents=NUM_AGENTS, max_iter=1000, dt=0.1, use_cbf=False, animate=False
     )
     
     # Run with CBF
     print("\n--- Running WITH CBF ---")
-    agents_with_cbf, cbf_stats = run_formation_with_cbf(
+    agents_with_cbf, _, cbf_stats = run_formation_with_cbf(
         n_agents=NUM_AGENTS, max_iter=1000, dt=0.1, use_cbf=True, animate=False
     )
     
@@ -983,18 +1172,19 @@ def compare_with_without_cbf():
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
-    # Option 1: Run with CBF and all visualizations
-    agents, cbf_stats = run_formation_with_cbf(
+    # Run with moving target (0,0,0) -> (50,50,10)
+    agents, target, cbf_stats = run_formation_with_cbf(
         n_agents=NUM_AGENTS,
-        max_iter=1000,  # Increased to allow convergence detection
+        max_iter=2000,
         dt=0.02,
         use_cbf=True,  
-        animate=True
+        animate=True,
+        moving_target=True
     )
     
     # Visualize results
-    plot_results_3d(agents)
+    plot_results_3d(agents, target)
     
     # Option 2: Compare with and without CBF
     # agents_no_cbf, agents_with_cbf = compare_with_without_cbf()
-    # plot_results_3d(agents_with_cbf)
+    # plot_results_3d(agents_with_cbf, None)
