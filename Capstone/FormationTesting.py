@@ -25,7 +25,7 @@ FOCUS_AGENT = 0  # Default to Agent 0 for GCBF visualization
 CONVERGENCE_THRESHOLD = 0.05  # Stop when all agents within 5cm of ideal positions
 CONVERGENCE_VELOCITY = 0.01  # And velocity below 1cm/s
 NUM_AGENTS = 5 # min 3 
-
+N_OBSTACLES = 6 
 # Target and Formation Parameters
 TARGET_TIME = 25.0  # Time for target to complete trajectory (seconds)
 FORMATION_RADIUS = 5.0  # Formation radius in meters
@@ -268,7 +268,43 @@ def plot_barrier_functions(agents, cbf_filter, focus_agent=FOCUS_AGENT):
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
+# ==================== OBSTACLE GENERATION ====================
 
+def generate_random_spherical_obstacles(
+        n_obstacles=5,
+        target_start=np.array([0.0, 0.0, 0.0]),
+        target_end=np.array([50.0, 50.0, 10.0]),
+        min_radius=2.0,
+        max_radius=6.0):
+    """
+    Generate random spherical obstacles along the target's path.
+
+    Obstacles appear near the line segment from start→end
+    so that drones MUST detour around them.
+
+    Returns:
+        List of dicts: {"center": np.array([x,y,z]), "radius": r}
+    """
+    obstacles = []
+
+    for _ in range(n_obstacles):
+        # Random interpolation along target path
+        t = np.random.uniform(0.1, 0.9)
+        base = target_start + t * (target_end - target_start)
+
+        # Random sideways offset (perpendicular plane)
+        offset = np.random.uniform(-10, 10, 3)
+        offset[2] = np.random.uniform(-2, 2)    # vertical spread
+
+        center = base + offset
+        radius = np.random.uniform(min_radius, max_radius)
+
+        obstacles.append({
+            "center": center,
+            "radius": radius
+        })
+
+    return obstacles
 
 # ==================== SIMULATION FUNCTION ====================
 
@@ -375,6 +411,29 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         ))
         print(f"Agent {i} initialized at: {init_pos} with zero initial velocity")
     
+    if moving_target:
+        obstacles = generate_random_spherical_obstacles(
+            n_obstacles=N_OBSTACLES,
+            target_start=target.start_pos,
+            target_end=target.end_pos,
+            min_radius=2.0,
+            max_radius=6.0
+        )
+    else:
+        # Static target fallback
+        obstacles = generate_random_spherical_obstacles(
+            n_obstacles=N_OBSTACLES,
+            target_start=np.array([0, 0, 0]),
+            target_end=np.array([0, 0, 2]),
+            min_radius=2.0,
+            max_radius=6.0
+        )
+
+    print(f"\nGenerated {len(obstacles)} spherical obstacles:")
+    for i, obs in enumerate(obstacles):
+        print(f"  Obs {i}: center={obs['center']}, radius={obs['radius']:.2f}")
+    
+    
     # ==================== ANIMATION SETUP ====================
     if animate:
         plt.ion()  # Turn on interactive mode
@@ -419,6 +478,25 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                       c='green', marker='x', s=200, alpha=0.5,
                       edgecolors='orange', linewidths=2)
             ideal_markers.append(marker)
+        
+        # ========== OBSTACLE VISUALIZATION ==========
+        obstacle_scatters = []
+        for obs in obstacles:
+            sx, sy, sz = obs["center"]
+            # Plot spherical obstacle center
+            sc = ax.scatter(sx, sy, sz,
+                c="purple", s=150, marker="o", alpha=0.7,
+                edgecolors="black", linewidths=2)
+            obstacle_scatters.append(sc)
+
+            # Draw approximate sphere outline (just a circle)
+            sphere_theta = np.linspace(0, 2*np.pi, 40)
+            circ_x = sx + obs["radius"] * np.cos(sphere_theta)
+            circ_y = sy + obs["radius"] * np.sin(sphere_theta)
+            circ_z = np.ones_like(sphere_theta) * sz
+            ax.plot(circ_x, circ_y, circ_z,
+                color="purple", linestyle="--", alpha=0.6, linewidth=2)
+
         
         # Draw formation circle
         theta = np.linspace(0, 2*np.pi, 50)
@@ -478,6 +556,21 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 ideal_markers_2d.append(marker)
                 ax2d.text(ideal_x, ideal_y + 0.7, f'Pos{i}', fontsize=9, 
                         ha='center', color='orange', weight='bold')
+            
+            # 2D top view obstacles
+            obstacle_scatters_2d = []
+            for obs in obstacles:
+                sx, sy, sz = obs["center"]
+                sc = ax2d.scatter(sx, sy,
+                    c="purple", s=350, marker="o",
+                    alpha=0.4, edgecolors="black", linewidths=2)
+                obstacle_scatters_2d.append(sc)
+
+                circ_x = sx + obs["radius"] * np.cos(sphere_theta)
+                circ_y = sy + obs["radius"] * np.sin(sphere_theta)
+                ax2d.plot(circ_x, circ_y,
+                    color="purple", linestyle="--", alpha=0.6, linewidth=2)
+
             
             # Draw formation circle in 2D
             formation_circle_2d, = ax2d.plot(circle_x, circle_y, 'g--', alpha=0.3, linewidth=2, zorder=1)
@@ -566,7 +659,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 positions, 
                 velocities, 
                 acc_desired,
-                obstacles=None
+                obstacles=obstacles
             )
             
             # Safety check
