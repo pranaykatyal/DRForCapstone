@@ -25,9 +25,9 @@ FOCUS_AGENT = 0  # Default to Agent 0 for GCBF visualization
 CONVERGENCE_THRESHOLD = 0.05  # Stop when all agents within 5cm of ideal positions
 CONVERGENCE_VELOCITY = 0.01  # And velocity below 1cm/s
 NUM_AGENTS = 5 # min 3 
-N_OBSTACLES = 6 
+N_OBSTACLES = 3 
 # Target and Formation Parameters
-TARGET_TIME = 25.0  # Time for target to complete trajectory (seconds)
+TARGET_TIME = 15.0  # Time for target to complete trajectory (seconds)
 FORMATION_RADIUS = 5.0  # Formation radius in meters
 
 # =============== Moving Target Class ===============
@@ -363,8 +363,8 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
     
     if moving_target:
         target = MovingTarget(
-            start_pos=np.array([0.0, 0.0, 0.0]),
-            end_pos=np.array([50.0, 50.0, 10.0]),
+            start_pos=np.array([0.0, 0.0, 0.0]), # Start position
+            end_pos=np.array([25.0, 25.0, 5.0]), # Goal position
             duration=TARGET_TIME,  # Use global parameter
             dt=dt
         )
@@ -489,13 +489,13 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 edgecolors="black", linewidths=2)
             obstacle_scatters.append(sc)
 
-            # Draw approximate sphere outline (just a circle)
-            sphere_theta = np.linspace(0, 2*np.pi, 40)
-            circ_x = sx + obs["radius"] * np.cos(sphere_theta)
-            circ_y = sy + obs["radius"] * np.sin(sphere_theta)
-            circ_z = np.ones_like(sphere_theta) * sz
-            ax.plot(circ_x, circ_y, circ_z,
-                color="purple", linestyle="--", alpha=0.6, linewidth=2)
+            # Draw 3D wireframe sphere
+            u = np.linspace(0, 2 * np.pi, 20)
+            v = np.linspace(0, np.pi, 10)
+            x = obs["radius"] * np.outer(np.cos(u), np.sin(v)) + sx
+            y = obs["radius"] * np.outer(np.sin(u), np.sin(v)) + sy
+            z = obs["radius"] * np.outer(np.ones(np.size(u)), np.cos(v)) + sz
+            ax.plot_wireframe(x, y, z, color='purple', alpha=0.3, linewidth=1)
 
         
         # Draw formation circle
@@ -566,8 +566,10 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                     alpha=0.4, edgecolors="black", linewidths=2)
                 obstacle_scatters_2d.append(sc)
 
-                circ_x = sx + obs["radius"] * np.cos(sphere_theta)
-                circ_y = sy + obs["radius"] * np.sin(sphere_theta)
+                # Draw 2D circle (top view projection)
+                theta_2d = np.linspace(0, 2*np.pi, 40)
+                circ_x = sx + obs["radius"] * np.cos(theta_2d)
+                circ_y = sy + obs["radius"] * np.sin(theta_2d)
                 ax2d.plot(circ_x, circ_y,
                     color="purple", linestyle="--", alpha=0.6, linewidth=2)
 
