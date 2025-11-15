@@ -1,4 +1,4 @@
-# Formation5Drone.py - COMPLETE VERSION WITH ALL FEATURES
+# Formation5Drone.py - Centralized
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -21,7 +21,7 @@ logging.getLogger('matplotlib.axes._base').setLevel(logging.ERROR)
 VIS_GRAPH_OVERLAY = True
 VIS_BARRIERS = True
 VIS_2D_TOPVIEW = True
-FOCUS_AGENT = 0  # Default to Agent 0 for GCBF visualization
+FOCUS_AGENT = 4  # Default to Agent 0 for GCBF visualization
 CONVERGENCE_THRESHOLD = 0.05  # Stop when all agents within 5cm of ideal positions
 CONVERGENCE_VELOCITY = 0.01  # And velocity below 1cm/s
 NUM_AGENTS = 5 # min 3 
@@ -273,9 +273,9 @@ def plot_barrier_functions(agents, cbf_filter, focus_agent=FOCUS_AGENT):
 def generate_random_spherical_obstacles(
         n_obstacles=5,
         target_start=np.array([0.0, 0.0, 0.0]),
-        target_end=np.array([50.0, 50.0, 10.0]),
-        min_radius=2.0,
-        max_radius=6.0):
+        target_end=np.array([25.0, 25.0, 5.0]),
+        min_radius=1.0,
+        max_radius=2.0):
     """
     Generate random spherical obstacles along the target's path.
 
@@ -416,8 +416,8 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             n_obstacles=N_OBSTACLES,
             target_start=target.start_pos,
             target_end=target.end_pos,
-            min_radius=2.0,
-            max_radius=6.0
+            min_radius=1.0,
+            max_radius=2.0
         )
     else:
         # Static target fallback
@@ -425,8 +425,8 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             n_obstacles=N_OBSTACLES,
             target_start=np.array([0, 0, 0]),
             target_end=np.array([0, 0, 2]),
-            min_radius=2.0,
-            max_radius=6.0
+            min_radius=1.0,
+            max_radius=2.0
         )
 
     print(f"\nGenerated {len(obstacles)} spherical obstacles:")

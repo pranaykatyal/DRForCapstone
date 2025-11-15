@@ -1,3 +1,4 @@
+# Centralized
 """
 Fixed Control Barrier Function (CBF) implementation for multi-drone safety.
 This version merges CBFSafetyFilter and GraphCBFSafetyFilter into one working class.
