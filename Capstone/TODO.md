@@ -62,7 +62,7 @@
 - [ ] Set up test map with 2-3 static obstacles
 - [ ] Verify single drone can fly with existing controller
 
----
+--------------------------DONE----------------------
 
 ### **Phase 3: Multi-Drone Simulator (Week 3-4)**
 
@@ -89,7 +89,7 @@
 - [ ] Test 4: Moving target through obstacle field (stress test)
 - [ ] Measure: collision rate, formation error, CBF activation frequency
 
----
+--------------------------DONE----------------------
 
 ### **Phase 4: Validation & Tuning (Week 5)**
 
