@@ -1,20 +1,27 @@
-# DecentralizedFormation.py - Distributed Formation Control with GCBF
+# DecentralizedFormation.py - FIXED Synchronous Distributed Formation Control with GCBF
 """
-Distributed multi-drone formation control with safety guarantees.
+FIXED Distributed multi-drone formation control with safety guarantees.
+
+CRITICAL FIXES:
+1. TRUE PARALLEL UPDATES: All agents update simultaneously (synchronous)
+2. LIMITED SENSING: Only agents within 7m can see target (matches async version)
+3. MATCHED HYPERPARAMETERS: Same as async version (10m comm, 7m visual)
 
 Key Features:
 - Each drone uses ONLY local information from neighbors
 - Distributed GCBF: each drone solves independent local QP
-- Communication range: 8.0m
-- Visual sensing range: 12.0m
+- Communication range: 10.0m (FIXED - matches async)
+- Visual sensing range: 7.0m (FIXED - matches async, LIMITED!)
 - Obstacles sensed locally and shared via messages
+- TRUE SYNCHRONOUS: All agents compute new state, then all apply updates simultaneously
 
 Architecture:
 1. Drones broadcast state (position, velocity) to neighbors
-2. Drones sense obstacles locally
+2. Drones sense target/obstacles locally (LIMITED 7m range!)
 3. Each drone computes desired acceleration (formation control)
 4. Each drone filters through local GCBF using neighbor info
-5. Drones update dynamics independently
+5. All drones compute new positions/velocities (parallel)
+6. All drones apply updates SIMULTANEOUSLY (true synchronous)
 """
 
 import numpy as np
@@ -38,9 +45,9 @@ CONVERGENCE_VELOCITY = 0.01
 NUM_AGENTS = 5
 N_OBSTACLES = 3
 
-# Communication and Sensing Parameters
-COMM_RANGE = 8.0              # Communication range (m)
-VISUAL_SENSING_RANGE = 12.0   # Visual sensing for target & obstacles (m)
+# Communication and Sensing Parameters (FIXED - MATCH ASYNC!)
+COMM_RANGE = 10.0              # Communication range (m) - FIXED: was 8.0, now 10.0
+VISUAL_SENSING_RANGE = 7.0     # Visual sensing for target & obstacles (m) - FIXED: was 12.0, now 7.0 LIMITED!
 TARGET_TIME = 15.0
 FORMATION_RADIUS = 5.0
 
@@ -91,8 +98,8 @@ class DroneAgent(DynamicAgent):
     
     Information Access:
     - Local: own position, velocity, acceleration
-    - Via Communication (8m): neighbor positions, velocities, target estimates
-    - Via Visual Sensing (12m): target position, obstacle positions
+    - Via Communication (10m): neighbor positions, velocities, target estimates
+    - Via Visual Sensing (7m LIMITED!): target position, obstacle positions
     """
     
     def __init__(self, id, state_3d, target_pos_3d, formation_radius=5.0, 
@@ -103,7 +110,8 @@ class DroneAgent(DynamicAgent):
         self.velocity = np.zeros(3, dtype=float)
         self.acceleration = np.zeros(3, dtype=float)
         
-        self.target_pos = np.array(target_pos_3d, dtype=float)
+        # FIXED: Initialize target_pos as None (agents don't know target location initially)
+        self.target_pos = None
         self.formation_radius = formation_radius
         self.Kp = Kp
         self.Kd = Kd
@@ -111,11 +119,14 @@ class DroneAgent(DynamicAgent):
         self.max_velocity = max_velocity
         self.max_acceleration = max_acceleration
         
-        # Message buffer for neighbor information
-        self.msgs = []  # List of tuples: (neighbor_id, position, velocity)
+        # Message buffer for neighbor information (includes target estimates)
+        self.msgs = []  # List of tuples: (neighbor_id, position, velocity, target_estimate)
         
         # Local obstacle map (sensed within VISUAL_SENSING_RANGE)
         self.local_obstacles = []
+        
+        # Visualization flag
+        self.has_direct_sensing = False
         
         # History for plotting
         self.position_hist = [self.position.copy()]
@@ -131,15 +142,28 @@ class DroneAgent(DynamicAgent):
         Broadcast current state to neighbors.
         
         Returns:
-            Tuple: (id, position, velocity)
+            Tuple: (id, position, velocity, target_estimate)
         """
-        return (self.id, self.position.copy(), self.velocity.copy())
+        return (self.id, self.position.copy(), self.velocity.copy(), 
+                self.target_pos.copy() if self.target_pos is not None else None)
     
     def compute_desired_acceleration(self):
         """
         Compute nominal acceleration from formation control law.
         Uses only local information and target estimate.
+        
+        FIXED: Returns zero acceleration if target_pos is None (hovering)
         """
+        if self.target_pos is None:
+            # No target knowledge - hover in place
+            position_error = np.zeros(3)
+            velocity_error = -self.velocity
+            acc = self.Kp * position_error + self.Kd * velocity_error
+            acc_norm = np.linalg.norm(acc)
+            if acc_norm > self.max_acceleration:
+                acc = acc / acc_norm * self.max_acceleration
+            return acc
+        
         n_agents = NUM_AGENTS
         assigned_angle = (2 * np.pi * self.id) / n_agents
         
@@ -208,6 +232,9 @@ class DroneAgent(DynamicAgent):
     
     def get_formation_error(self):
         """Compute distance from ideal formation position."""
+        if self.target_pos is None:
+            return 999.0  # Large error if no target knowledge
+            
         n_agents = NUM_AGENTS
         assigned_angle = (2 * np.pi * self.id) / n_agents
         
@@ -260,7 +287,7 @@ def plot_barrier_functions(agents, cbf_filter, focus_agent=FOCUS_AGENT):
                     for k in range(T)
                 ]
                 plt.plot(time, h_vals, label=f"h_{focus_agent},{j}", linewidth=2)
-        plt.title(f'GCBF Safety Functions for Agent {focus_agent} Over Time', fontsize=14)
+        plt.title(f'GCBF Safety Functions for Agent {focus_agent} Over Time (SYNC-FIXED)', fontsize=14)
     else:
         for i in range(n):
             for j in range(i+1, n):
@@ -269,7 +296,7 @@ def plot_barrier_functions(agents, cbf_filter, focus_agent=FOCUS_AGENT):
                     for k in range(T)
                 ]
                 plt.plot(time, h_vals, label=f"h_{i},{j}")
-        plt.title('All Pairwise GCBF Safety Functions Over Time', fontsize=14)
+        plt.title('All Pairwise GCBF Safety Functions Over Time (SYNC-FIXED)', fontsize=14)
     
     plt.axhline(0, color='k', linestyle='--', label='Safety boundary', linewidth=2)
     plt.xlabel('Time (s)', fontsize=12)
@@ -309,16 +336,32 @@ def generate_random_spherical_obstacles(
 
 # ==================== SIMULATION FUNCTION ====================
 
-def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=True, animate=True,
-                           moving_target=True):
+def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.02, consensus_alpha=0.3,
+                           use_cbf=True, animate=True, moving_target=True):
     """
-    Run DISTRIBUTED formation control simulation with GCBF safety filter.
+    Run FIXED SYNCHRONOUS DISTRIBUTED formation control simulation with GCBF safety filter.
     
-    Key Changes from Centralized:
-    - Drones broadcast state via messages (COMM_RANGE = 8m)
-    - Obstacles sensed locally (VISUAL_SENSING_RANGE = 12m)
-    - Each drone solves independent local QP
-    - No global coordinator
+    CRITICAL FIXES:
+    1. TRUE PARALLEL UPDATES: All agents compute new state, then all update simultaneously
+    2. LIMITED SENSING: Only agents within 7m can see target (matches async)
+    3. MATCHED HYPERPARAMETERS: 10m comm, 7m visual (matches async)
+    4. SAME CONSENSUS ALGORITHM: Gradient-based with adjustable alpha (matches async)
+    
+    Key Changes from Old Synchronous:
+    - Agents start with target_pos=None (no initial knowledge)
+    - Only agents within 7m can sense target directly
+    - Agents beyond 7m must use consensus with neighbors
+    - All position/velocity updates applied simultaneously (true parallel)
+    - Uses same gradient consensus: x_i(n+1) = x_i(n) + α·∑(x_j(n) - x_i(n))
+    
+    Args:
+        n_agents: Number of drones
+        max_iter: Maximum iterations
+        dt: Timestep (seconds)
+        consensus_alpha: Consensus weight (0-1) - same as async version
+        use_cbf: Enable CBF safety filtering
+        animate: Enable visualization
+        moving_target: Enable moving target
     """
     
     # Import DISTRIBUTED CBF filter
@@ -342,7 +385,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             max_acceleration=5.0
         )
         
-        v_max = 3.0
+        v_max = 5.0
         R_min = cbf_filter.compute_minimum_sensing_radius(
             gamma=cbf_filter.alpha2, 
             v_max=v_max
@@ -370,28 +413,54 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
     np.random.seed(42)
     
     print(f"\n{'='*60}")
-    print(f"DISTRIBUTED Formation Control Simulation")
+    print(f"SYNCHRONOUS DISTRIBUTED Formation Control (FIXED)")
     print(f"{'='*60}")
     print(f"Agents: {n_agents}")
     print(f"Target: {'MOVING' if moving_target else 'STATIC'}")
     print(f"Formation radius: {formation_radius}m")
     print(f"CBF enabled: {use_cbf} (DISTRIBUTED)")
-    print(f"Communication range: {COMM_RANGE}m")
-    print(f"Visual sensing range: {VISUAL_SENSING_RANGE}m")
+    print(f"Communication range: {COMM_RANGE}m (FIXED - matches async)")
+    print(f"Visual sensing range: {VISUAL_SENSING_RANGE}m (FIXED - LIMITED, matches async)")
+    print(f"Consensus alpha: {consensus_alpha} (gradient-based, matches async)")
     print(f"Timestep: {dt}s, Max Duration: {max_iter*dt:.1f}s")
     print(f"Controller: PD with Kp=0.5, Kd=1.2")
+    print(f"Update mode: TRUE PARALLEL (synchronous)")
     print(f"{'='*60}\n")
     
+    # FIXED: Start agents at same position as async version (7m center)
+    agents_start_center = np.array([7.0, 0.0, 2.0])
+    current_target_pos = target.position if moving_target else target_pos
+    
+    print(f"Formation center start: {agents_start_center}")
+    print(f"Distance from target: {np.linalg.norm(agents_start_center - current_target_pos):.1f}m")
+    print(f"Visual range: {VISUAL_SENSING_RANGE}m")
+    print(f"Formation radius: {formation_radius}m")
+    
+    # Calculate initial visibility
+    temp_seeing_count = 0
     for i in range(n_agents):
-        init_pos = np.random.uniform(-10, 10, 3)
-        init_pos[2] = np.random.uniform(1, 3)
-        
-        current_target_pos = target.position if moving_target else target_pos
+        angle = (2 * np.pi * i) / n_agents
+        init_pos = agents_start_center + formation_radius * np.array([
+            np.cos(angle), np.sin(angle), 0.0
+        ])
+        dist_to_target = np.linalg.norm(init_pos - current_target_pos)
+        if dist_to_target < VISUAL_SENSING_RANGE:
+            temp_seeing_count += 1
+    
+    print(f"→ Initial visibility: {temp_seeing_count}/{n_agents} agents within {VISUAL_SENSING_RANGE}m range")
+    print(f"→ This creates information asymmetry (same as async)")
+    print()
+    
+    for i in range(n_agents):
+        angle = (2 * np.pi * i) / n_agents
+        init_pos = agents_start_center + formation_radius * np.array([
+            np.cos(angle), np.sin(angle), 0.0
+        ])
         
         agents.append(DroneAgent(
             id=i,
             state_3d=init_pos,
-            target_pos_3d=current_target_pos,
+            target_pos_3d=None,  # FIXED: No initial target knowledge!
             formation_radius=formation_radius,
             Kp=0.5,
             Kd=1.2,
@@ -401,7 +470,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         ))
         print(f"Agent {i} initialized at: {init_pos}")
     
-    # Generate obstacles
+    # Generate obstacles (same as async)
     if moving_target:
         obstacles = generate_random_spherical_obstacles(
             n_obstacles=N_OBSTACLES,
@@ -411,19 +480,20 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             max_radius=2.0
         )
     else:
-        obstacles = generate_random_spherical_obstacles(
-            n_obstacles=N_OBSTACLES,
-            target_start=np.array([0, 0, 0]),
-            target_end=np.array([0, 0, 2]),
-            min_radius=1.0,
-            max_radius=2.0
-        )
+        obstacles = []
 
     print(f"\nGenerated {len(obstacles)} spherical obstacles:")
     for i, obs in enumerate(obstacles):
         print(f"  Obs {i}: center={obs['center']}, radius={obs['radius']:.2f}")
+    print()
     
-    # ==================== ANIMATION SETUP (unchanged) ====================
+    # Check initial visibility
+    initial_seeing = sum(1 for a in agents 
+                        if np.linalg.norm(a.position - current_target_pos) < VISUAL_SENSING_RANGE)
+    print(f"→ {initial_seeing}/{n_agents} agents can initially see target")
+    print("→ Remaining agents must use consensus!\n")
+    
+    # ==================== ANIMATION SETUP ====================
     if animate:
         plt.ion()
         
@@ -493,11 +563,11 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         ax.set_xlabel('X (m)', fontsize=12)
         ax.set_ylabel('Y (m)', fontsize=12)
         ax.set_zlabel('Z (m)', fontsize=12)
-        ax.set_title('3D Formation Control (DISTRIBUTED)', fontsize=14, fontweight='bold')
+        ax.set_title('3D SYNC Formation (GREEN=Direct, COLOR=Consensus)', fontsize=11, fontweight='bold')
         ax.legend(loc='upper right', fontsize=8)
-        ax.set_xlim(-15, 15)
-        ax.set_ylim(-15, 15)
-        ax.set_zlim(0, 5)
+        ax.set_xlim(-15, 30)
+        ax.set_ylim(-15, 30)
+        ax.set_zlim(0, 10)
         ax.grid(True, alpha=0.3)
         
         if VIS_2D_TOPVIEW and ax2d is not None:
@@ -516,7 +586,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 target_traj_line_2d, = ax2d.plot([], [], 'r--', linewidth=2, alpha=0.5, zorder=1)
             
             ideal_markers_2d = []
-            position_labels_2d = []  # Store position labels for updating
+            position_labels_2d = []
             for i in range(n_agents):
                 angle = (2 * np.pi * i) / n_agents
                 ideal_x = current_target_pos[0] + formation_radius * np.cos(angle)
@@ -524,7 +594,6 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 marker = ax2d.scatter(ideal_x, ideal_y, c='green', marker='x', s=300, 
                            alpha=0.5, edgecolors='orange', linewidths=3, zorder=4)
                 ideal_markers_2d.append(marker)
-                # Create label and store it for updating
                 label = ax2d.text(ideal_x, ideal_y + 0.7, f'Pos{i}', fontsize=9, 
                         ha='center', color='orange', weight='bold', zorder=10)
                 position_labels_2d.append(label)
@@ -561,12 +630,12 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             
             ax2d.set_xlabel('X (m)', fontsize=12)
             ax2d.set_ylabel('Y (m)', fontsize=12)
-            ax2d.set_title(f'2D Top View - DISTRIBUTED (Focus: Agent {FOCUS_AGENT if FOCUS_AGENT >= 0 else "All"})', 
+            ax2d.set_title(f'2D Top View - SYNC (TRUE PARALLEL)', 
                          fontsize=14, fontweight='bold')
             ax2d.axis('equal')
             ax2d.grid(True, alpha=0.3)
-            ax2d.set_xlim(-15, 15)
-            ax2d.set_ylim(-15, 15)
+            ax2d.set_xlim(-15, 30)
+            ax2d.set_ylim(-15, 30)
         
         info_text = ax.text2D(0.02, 0.98, '', transform=ax.transAxes, 
                              fontsize=10, verticalalignment='top',
@@ -574,7 +643,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
     # ==================== END ANIMATION SETUP ====================
     
     # Main simulation loop
-    print(f"\nStarting DISTRIBUTED simulation...")
+    print(f"Starting SYNCHRONOUS (TRUE PARALLEL) simulation...")
     converged = False
     convergence_count = 0
     convergence_patience = 20
@@ -585,46 +654,77 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         # ====================================================================
         if moving_target:
             target.update()
-            
-            # Target sensing and consensus (DISTRIBUTED)
-            for agent in agents:
-                dist_to_target = np.linalg.norm(agent.position - target.position)
-                
-                if dist_to_target < VISUAL_SENSING_RANGE:  # Direct sensing at 12m
-                    agent.target_pos = target.position.copy()
-                else:
-                    # Out of visual range: use consensus with neighbors
-                    neighbor_estimates = []
-                    for other_agent in agents:
-                        if other_agent.id != agent.id:
-                            dist_to_neighbor = np.linalg.norm(agent.position - other_agent.position)
-                            if dist_to_neighbor < COMM_RANGE:  # Within comm range (8m)
-                                neighbor_estimates.append(other_agent.target_pos)
-                    
-                    if len(neighbor_estimates) > 0:
-                        consensus_estimate = np.mean(neighbor_estimates, axis=0)
-                        agent.target_pos = 0.8 * consensus_estimate + 0.2 * agent.target_pos
+            true_target = target.position.copy()
+        else:
+            true_target = target_pos
         
         # ====================================================================
-        # STEP 1: MESSAGE PASSING (DISTRIBUTED)
-        # Critical: Clear old messages BEFORE broadcasting new ones
+        # STEP 1: TARGET SENSING AND CONSENSUS (DISTRIBUTED, LIMITED 7m!)
+        # FIXED: Only agents within 7m can see target directly
+        # FIXED: Uses same gradient-based consensus as async version
+        # ====================================================================
+        for agent in agents:
+            dist_to_target = np.linalg.norm(agent.position - true_target)
+            
+            if dist_to_target < VISUAL_SENSING_RANGE:  # FIXED: Limited 7m sensing!
+                # Direct sensing
+                agent.target_pos = true_target.copy()
+                agent.has_direct_sensing = True
+            else:
+                # Out of visual range: use consensus with neighbors
+                agent.has_direct_sensing = False
+                
+                if agent.target_pos is None:
+                    # First time - initialize from any available neighbor
+                    for msg in agent.msgs:
+                        neighbor_id, neighbor_pos, neighbor_vel, neighbor_target = msg
+                        if neighbor_target is not None:
+                            target_arr = np.array(neighbor_target).ravel()
+                            if len(target_arr) == 3 and np.all(np.isfinite(target_arr)):
+                                agent.target_pos = target_arr.copy()
+                                break
+                else:
+                    # Apply gradient-based consensus (same as async!)
+                    # x_i(n+1) = x_i(n) + α·∑_j(x_j(n) - x_i(n))
+                    consensus_gradient = np.zeros(3)
+                    num_neighbors = 0
+                    
+                    for msg in agent.msgs:
+                        neighbor_id, neighbor_pos, neighbor_vel, neighbor_target = msg
+                        if neighbor_target is not None:
+                            target_arr = np.array(neighbor_target).ravel()
+                            if len(target_arr) == 3 and np.all(np.isfinite(target_arr)):
+                                # Accumulate gradient: (neighbor_estimate - my_estimate)
+                                consensus_gradient += (target_arr - agent.target_pos)
+                                num_neighbors += 1
+                    
+                    if num_neighbors > 0:
+                        # Apply gradient update: x_i(n+1) = x_i(n) + α·∑(x_j - x_i(n))
+                        new_estimate = agent.target_pos + consensus_alpha * consensus_gradient
+                        
+                        if np.all(np.isfinite(new_estimate)):
+                            agent.target_pos = new_estimate
+                        else:
+                            print(f"WARNING: Agent {agent.id} computed invalid consensus estimate")
+        
+        # ====================================================================
+        # STEP 2: MESSAGE PASSING (DISTRIBUTED)
+        # FIXED: Messages now include target estimates
         # ====================================================================
         for agent in agents:
             agent.clear_msgs()
         
-        # Broadcast messages to neighbors within COMM_RANGE
         for agent in agents:
-            msg = agent.msg()  # Get (id, position, velocity)
+            msg = agent.msg()  # (id, position, velocity, target_estimate)
             
             for other_agent in agents:
                 if agent.id != other_agent.id:
                     dist = np.linalg.norm(agent.position - other_agent.position)
-                    if dist <= COMM_RANGE:  # Within communication range (8m)
+                    if dist <= COMM_RANGE:
                         other_agent.add_msg(msg)
         
         # ====================================================================
-        # STEP 2: LOCAL OBSTACLE SENSING (DISTRIBUTED)
-        # Each drone senses obstacles within VISUAL_SENSING_RANGE (12m)
+        # STEP 3: LOCAL OBSTACLE SENSING (DISTRIBUTED)
         # ====================================================================
         for agent in agents:
             agent.local_obstacles = []
@@ -634,40 +734,36 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                     agent.local_obstacles.append(obs)
         
         # ====================================================================
-        # STEP 3: Compute DESIRED accelerations (formation controller)
+        # STEP 4: Compute DESIRED accelerations (formation controller)
         # ====================================================================
         acc_desired = np.zeros((n_agents, 3))
         for i, agent in enumerate(agents):
             acc_desired[i] = agent.compute_desired_acceleration()
         
         # ====================================================================
-        # STEP 4: DISTRIBUTED CBF FILTERING
-        # Each drone solves INDEPENDENT local QP using ONLY neighbor info
+        # STEP 5: DISTRIBUTED CBF FILTERING
         # ====================================================================
         acc_safe = np.zeros((n_agents, 3))
         
         if use_cbf:
             for i, agent in enumerate(agents):
-                # Extract neighbor information from received messages
                 neighbor_positions = []
                 neighbor_velocities = []
                 
                 for msg in agent.msgs:
-                    neighbor_id, neighbor_pos, neighbor_vel = msg
+                    neighbor_id, neighbor_pos, neighbor_vel, neighbor_target = msg
                     neighbor_positions.append(neighbor_pos)
                     neighbor_velocities.append(neighbor_vel)
                 
-                # Solve LOCAL QP for this drone (DISTRIBUTED!)
                 acc_safe[i] = cbf_filter.filter_acceleration_single_drone(
                     my_position=agent.position,
                     my_velocity=agent.velocity,
                     my_acc_desired=acc_desired[i],
                     neighbor_positions=neighbor_positions,
                     neighbor_velocities=neighbor_velocities,
-                    obstacles=agent.local_obstacles  # LOCAL obstacles only!
+                    obstacles=agent.local_obstacles
                 )
             
-            # Safety check (for logging only, not centralized)
             positions = np.array([agent.position for agent in agents])
             is_safe, violations = cbf_filter.check_safety(positions, obstacles)
             if not is_safe:
@@ -675,14 +771,42 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 for v in violations:
                     print(f"   {v}")
         else:
-            # No CBF: use desired acceleration directly
             acc_safe = acc_desired
         
         # ====================================================================
-        # STEP 5: Update dynamics
+        # STEP 6: TRUE PARALLEL UPDATE (SYNCHRONOUS!)
+        # CRITICAL FIX: Compute ALL new states first, THEN apply simultaneously
         # ====================================================================
+        new_positions = []
+        new_velocities = []
+        new_accelerations = []
+        
         for i, agent in enumerate(agents):
-            agent.update_dynamics(acc_safe[i])
+            # Compute new velocity
+            new_vel = agent.velocity + acc_safe[i] * agent.dt
+            vel_norm = np.linalg.norm(new_vel)
+            if vel_norm > agent.max_velocity:
+                new_vel = (new_vel / vel_norm) * agent.max_velocity
+            
+            # Compute new position
+            new_pos = agent.position + new_vel * agent.dt
+            
+            new_positions.append(new_pos)
+            new_velocities.append(new_vel)
+            new_accelerations.append(acc_safe[i])
+        
+        # Apply ALL updates simultaneously (TRUE SYNCHRONOUS!)
+        for i, agent in enumerate(agents):
+            agent.position = new_positions[i].copy()
+            agent.velocity = new_velocities[i].copy()
+            agent.acceleration = new_accelerations[i].copy()
+            
+            agent.state = agent.position[:2]
+            agent.val = agent.state
+            
+            agent.position_hist.append(agent.position.copy())
+            agent.velocity_hist.append(agent.velocity.copy())
+            agent.acceleration_hist.append(agent.acceleration.copy())
         
         # ==================== CONVERGENCE CHECK ====================
         formation_errors = [agent.get_formation_error() for agent in agents]
@@ -692,10 +816,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         max_vel = np.max([np.linalg.norm(a.velocity) for a in agents])
         
         formation_center = np.mean([agent.position for agent in agents], axis=0)
-        if moving_target:
-            center_to_target_error = np.linalg.norm(formation_center - target.position)
-        else:
-            center_to_target_error = np.linalg.norm(formation_center - target_pos)
+        center_to_target_error = np.linalg.norm(formation_center - true_target)
         
         if not hasattr(agents[0], 'center_error_hist'):
             for agent in agents:
@@ -721,14 +842,21 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         else:
             convergence_count = 0
         
-        # ==================== ANIMATION UPDATE (unchanged logic) ====================
+        # ==================== ANIMATION UPDATE ====================
         if animate and iteration % 2 == 0:
             current_positions = np.array([agent.position for agent in agents])
             drone_scatter._offsets3d = (current_positions[:, 0], 
                                         current_positions[:, 1], 
                                         current_positions[:, 2])
             
-            drone_scatter.set_color(colors)
+            # Color based on direct sensing (green) vs consensus (color)
+            agent_colors = []
+            for agent in agents:
+                if agent.has_direct_sensing:
+                    agent_colors.append([0, 1, 0, 1])  # GREEN
+                else:
+                    agent_colors.append(colors[agent.id])
+            drone_scatter.set_color(agent_colors)
             
             for i, agent in enumerate(agents):
                 traj = np.array(agent.position_hist)
@@ -793,29 +921,6 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                                              [current_positions[FOCUS_AGENT,2], current_positions[j,2]],
                                              color=color, linewidth=linewidth, alpha=alpha)[0]
                                 graph_lines.append(line)
-                else:
-                    for i in range(n_agents):
-                        for j in range(i+1, n_agents):
-                            dist = np.linalg.norm(current_positions[i] - current_positions[j])
-                            if dist < cbf_filter.R_sense:
-                                if dist < cbf_filter.d_safe * 1.1:
-                                    color = 'red'
-                                    linewidth = 2.5
-                                    alpha = 0.8
-                                elif dist < cbf_filter.d_safe * 1.5:
-                                    color = 'orange'
-                                    linewidth = 2.0
-                                    alpha = 0.6
-                                else:
-                                    color = 'gray'
-                                    linewidth = 1.0
-                                    alpha = 0.3
-                                
-                                line = ax.plot([current_positions[i,0], current_positions[j,0]],
-                                             [current_positions[i,1], current_positions[j,1]],
-                                             [current_positions[i,2], current_positions[j,2]],
-                                             color=color, linewidth=linewidth, alpha=alpha)[0]
-                                graph_lines.append(line)
             
             if VIS_2D_TOPVIEW and ax2d is not None:
                 drone_scatter_2d.set_offsets(current_positions[:, :2])
@@ -836,7 +941,6 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                         ideal_x = current_target_pos[0] + formation_radius * np.cos(angle)
                         ideal_y = current_target_pos[1] + formation_radius * np.sin(angle)
                         marker.set_offsets([[ideal_x, ideal_y]])
-                        # Update position label to follow ideal position
                         position_labels_2d[i].set_position((ideal_x, ideal_y + 0.7))
                     
                     formation_circle_2d.set_data(circle_x, circle_y)
@@ -895,28 +999,6 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                                                     [current_positions[FOCUS_AGENT,1], current_positions[j,1]],
                                                     color=color, linewidth=linewidth, alpha=alpha, zorder=6)
                                     graph_lines_2d.append(line)
-                    else:
-                        for i in range(n_agents):
-                            for j in range(i+1, n_agents):
-                                dist = np.linalg.norm(current_positions[i] - current_positions[j])
-                                if dist < cbf_filter.R_sense:
-                                    if dist < cbf_filter.d_safe * 1.1:
-                                        color = 'red'
-                                        linewidth = 2.5
-                                        alpha = 0.8
-                                    elif dist < cbf_filter.d_safe * 1.5:
-                                        color = 'orange'
-                                        linewidth = 2.0
-                                        alpha = 0.6
-                                    else:
-                                        color = 'gray'
-                                        linewidth = 1.0
-                                        alpha = 0.3
-                                    
-                                    line, = ax2d.plot([current_positions[i,0], current_positions[j,0]],
-                                                    [current_positions[i,1], current_positions[j,1]],
-                                                    color=color, linewidth=linewidth, alpha=alpha, zorder=6)
-                                    graph_lines_2d.append(line)
                 
                 all_x = current_positions[:, 0]
                 all_y = current_positions[:, 1]
@@ -924,18 +1006,29 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                     all_x = np.append(all_x, current_target_pos[0])
                     all_y = np.append(all_y, current_target_pos[1])
                 
-                margin = 10.0
-                x_center = np.mean(all_x)
-                y_center = np.mean(all_y)
-                x_range = max(15.0, (all_x.max() - all_x.min()) / 2 + margin)
-                y_range = max(15.0, (all_y.max() - all_y.min()) / 2 + margin)
+                all_x = all_x[np.isfinite(all_x)]
+                all_y = all_y[np.isfinite(all_y)]
                 
-                ax2d.set_xlim(x_center - x_range, x_center + x_range)
-                ax2d.set_ylim(y_center - y_range, y_center + y_range)
+                if len(all_x) > 0 and len(all_y) > 0:
+                    margin = 10.0
+                    x_center = np.mean(all_x)
+                    y_center = np.mean(all_y)
+                    x_range = max(15.0, (all_x.max() - all_x.min()) / 2 + margin)
+                    y_range = max(15.0, (all_y.max() - all_y.min()) / 2 + margin)
+                    
+                    ax2d.set_xlim(x_center - x_range, x_center + x_range)
+                    ax2d.set_ylim(y_center - y_range, y_center + y_range)
             
+            seeing_count = sum(1 for a in agents if a.has_direct_sensing)
+            consensus_only = n_agents - seeing_count
             avg_acc = np.mean([np.linalg.norm(a.acceleration) for a in agents])
             info_text.set_text(
                 f"Iteration: {iteration:04d}\n"
+                f"===SYNC (PARALLEL)===\n"
+                f"Direct Sensing: {seeing_count}/{n_agents}\n"
+                f"Consensus Only: {consensus_only}/{n_agents}\n"
+                f"Alpha: {consensus_alpha:.2f}\n"
+                f"==================\n"
                 f"Center->Target: {center_to_target_error:.3f} m\n"
                 f"Avg form error: {avg_error:.3f} m\n"
                 f"Max form error: {max_error:.3f} m\n"
@@ -975,25 +1068,27 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         # ==================== END ANIMATION UPDATE ====================
         
         if iteration % 50 == 0:
+            seeing_count = sum(1 for a in agents if a.has_direct_sensing)
+            no_target = [a.id for a in agents if a.target_pos is None]
+            if no_target and iteration < 200:
+                print(f"  WARNING: Agents without target: {no_target}")
+            
             print(f"Iter {iteration:3d}: "
                   f"Center->Target: {center_to_target_error:.3f}m, "
                   f"Formation error: avg={avg_error:.3f}m, max={max_error:.3f}m, "
-                  f"Avg vel: {avg_vel:.3f}m/s")
+                  f"Seeing: {seeing_count}/{n_agents}")
         
         if converged and not animate:
             break
     
-    if use_cbf and cbf_filter is not None and VIS_BARRIERS:
-        plot_barrier_functions(agents, cbf_filter, focus_agent=FOCUS_AGENT)
+    if animate:
+        plt.ioff()
+        plt.show()
+        print("\nAnimation window closed.")
     
     print(f"\n{'='*60}")
     print("SIMULATION COMPLETE")
     print(f"{'='*60}")
-    
-    if animate:
-        plt.ioff()
-        plt.show(block=False)
-        print("\nAnimation window showing final state. Close to continue...")
     
     if use_cbf:
         stats = cbf_filter.get_statistics()
@@ -1007,7 +1102,10 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
     final_errors = [agent.get_formation_error() for agent in agents]
     print(f"\nFinal Formation Errors:")
     for i, error in enumerate(final_errors):
-        print(f"  Agent {i}: {error:.3f}m")
+        if agents[i].target_pos is None:
+            print(f"  Agent {i}: {error:.3f}m (NO TARGET KNOWLEDGE)")
+        else:
+            print(f"  Agent {i}: {error:.3f}m")
     print(f"  Average: {np.mean(final_errors):.3f}m")
     print(f"  Maximum: {np.max(final_errors):.3f}m")
     
@@ -1022,6 +1120,11 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         print(f"\nFormation converged after {actual_iter} iterations ({actual_iter*dt:.1f}s)")
     else:
         print(f"\nFormation did not converge within {max_iter} iterations")
+    
+    # Compute drift metric (same as async)
+    motion_end = int(15.0 / dt)
+    avg_drift_motion = np.mean([agents[0].center_error_hist[i] for i in range(min(motion_end, len(agents[0].center_error_hist)))])
+    print(f"\nAverage drift during target motion (0-15s): {avg_drift_motion:.3f}m")
     
     cbf_stats = cbf_filter.get_statistics() if use_cbf else None
     return agents, target, cbf_stats
@@ -1059,7 +1162,7 @@ def plot_results_3d(agents, target=None):
     ax1.set_xlabel('X (m)', fontsize=10)
     ax1.set_ylabel('Y (m)', fontsize=10)
     ax1.set_zlabel('Z (m)', fontsize=10)
-    ax1.set_title('3D Drone Trajectories (DISTRIBUTED)', fontsize=12, fontweight='bold')
+    ax1.set_title('3D Drone Trajectories (SYNC-FIXED)', fontsize=12, fontweight='bold')
     ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.3)
     
@@ -1069,23 +1172,29 @@ def plot_results_3d(agents, target=None):
         ax2.plot(agent.position[0], agent.position[1], 'o', 
                 markersize=12, color=colors[i], label=f'Drone {agent.id}')
         
-        angle = (2 * np.pi * agent.id) / n_agents
-        ideal_x = agent.target_pos[0] + agent.formation_radius * np.cos(angle)
-        ideal_y = agent.target_pos[1] + agent.formation_radius * np.sin(angle)
-        ax2.plot(ideal_x, ideal_y, 'x', markersize=12, 
-                color=colors[i], markeredgewidth=3)
-        
-        ax2.plot([agent.position[0], ideal_x], 
-                [agent.position[1], ideal_y], 
-                '--', color=colors[i], alpha=0.5, linewidth=1)
+        if agent.target_pos is not None:
+            angle = (2 * np.pi * agent.id) / n_agents
+            ideal_x = agent.target_pos[0] + agent.formation_radius * np.cos(angle)
+            ideal_y = agent.target_pos[1] + agent.formation_radius * np.sin(angle)
+            ax2.plot(ideal_x, ideal_y, 'x', markersize=12, 
+                    color=colors[i], markeredgewidth=3)
+            
+            ax2.plot([agent.position[0], ideal_x], 
+                    [agent.position[1], ideal_y], 
+                    '--', color=colors[i], alpha=0.5, linewidth=1)
     
     theta = np.linspace(0, 2*np.pi, 100)
-    target_pos = agents[0].target_pos
-    circle_x = target_pos[0] + agents[0].formation_radius * np.cos(theta)
-    circle_y = target_pos[1] + agents[0].formation_radius * np.sin(theta)
-    ax2.plot(circle_x, circle_y, 'k--', alpha=0.3, linewidth=2)
+    target_pos = None
+    for agent in agents:
+        if agent.target_pos is not None:
+            target_pos = agent.target_pos
+            break
     
-    ax2.plot(target_pos[0], target_pos[1], 'r+', markersize=20, markeredgewidth=3)
+    if target_pos is not None:
+        circle_x = target_pos[0] + agents[0].formation_radius * np.cos(theta)
+        circle_y = target_pos[1] + agents[0].formation_radius * np.sin(theta)
+        ax2.plot(circle_x, circle_y, 'k--', alpha=0.3, linewidth=2)
+        ax2.plot(target_pos[0], target_pos[1], 'r+', markersize=20, markeredgewidth=3)
     
     ax2.set_xlabel('X (m)', fontsize=10)
     ax2.set_ylabel('Y (m)', fontsize=10)
@@ -1106,6 +1215,9 @@ def plot_results_3d(agents, target=None):
                 linewidth=3, label='Formation Center -> Target', alpha=0.8)
     
     for i, agent in enumerate(agents):
+        if agent.target_pos is None:
+            continue
+            
         errors = [np.linalg.norm(np.array(agent.position_hist[j]) - 
                                  (agent.target_pos + agent.formation_radius * np.array([
                                      np.cos(2*np.pi*agent.id/NUM_AGENTS),
@@ -1120,7 +1232,7 @@ def plot_results_3d(agents, target=None):
     for t in range(max_len):
         errors_at_t = []
         for agent in agents:
-            if t < len(agent.position_hist):
+            if t < len(agent.position_hist) and agent.target_pos is not None:
                 ideal = agent.target_pos + agent.formation_radius * np.array([
                     np.cos(2*np.pi*agent.id/NUM_AGENTS),
                     np.sin(2*np.pi*agent.id/NUM_AGENTS),
@@ -1139,7 +1251,7 @@ def plot_results_3d(agents, target=None):
     
     ax3.set_xlabel('Time (s)', fontsize=10)
     ax3.set_ylabel('Error (m)', fontsize=10)
-    ax3.set_title('Formation Errors Over Time (DISTRIBUTED)', 
+    ax3.set_title('Formation Errors Over Time (SYNC-FIXED)', 
                  fontsize=12, fontweight='bold')
     ax3.legend(fontsize=7, loc='upper right')
     ax3.grid(True, alpha=0.3)
@@ -1155,9 +1267,22 @@ if __name__ == "__main__":
         n_agents=NUM_AGENTS,
         max_iter=2000,
         dt=0.02,
+        consensus_alpha=0.7,  # Try 0.3, 0.7 to compare with async
         use_cbf=True,  
         animate=True,
         moving_target=True
     )
+    
+    if VIS_BARRIERS and cbf_stats is not None:
+        from DecentralizedGCBF import GraphCBFSafetyFilter
+        cbf_filter = GraphCBFSafetyFilter(
+            n_drones=NUM_AGENTS,
+            safety_distance=2.0,
+            sensing_radius=COMM_RANGE,
+            alpha1=3.0,
+            alpha2=1.5,
+            max_acceleration=5.0
+        )
+        plot_barrier_functions(agents, cbf_filter, focus_agent=FOCUS_AGENT)
     
     plot_results_3d(agents, target)
