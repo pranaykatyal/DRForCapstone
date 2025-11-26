@@ -1,0 +1,315 @@
+"""
+AsyncConsensusTest3Agent.py - Simple 3-Agent Async Consensus Validation
+
+Replicates the paper's exact scenario to verify:
+1. Synchronous consensus converges to true average
+2. Asynchronous consensus has phase lag drift
+3. Math matches our matrix analysis from yesterday
+
+This is Step 1 before integrating into DecentralizedFormation.py
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ==================== SYNCHRONOUS CONSENSUS ====================
+
+def synchronous_consensus_3_agents(X0, alpha=0.3, n_iterations=100):
+    """
+    Standard synchronous consensus - all agents update simultaneously.
+    
+    Update rule: x_i(n+1) = x_i(n) + α * Σ(x_j(n) - x_i(n))
+    """
+    X = X0.copy()
+    history = [X.copy()]
+    
+    for _ in range(n_iterations):
+        # All agents see each other's CURRENT state
+        X_new = X.copy()
+        
+        for i in range(3):
+            # Sum of neighbors (complete graph: everyone sees everyone)
+            neighbor_sum = 0
+            for j in range(3):
+                if i != j:
+                    neighbor_sum += X[j] - X[i]
+            
+            X_new[i] = X[i] + alpha * neighbor_sum
+        
+        X = X_new
+        history.append(X.copy())
+    
+    return np.array(history)
+
+
+# ==================== ASYNCHRONOUS CONSENSUS ====================
+
+def asynchronous_consensus_3_agents(X0, alpha=0.3, n_iterations=100):
+    """
+    Asynchronous consensus with phase lag.
+    
+    Update order: Agent 0 -> Agent 1 -> Agent 2
+    
+    Agent 0 sees: Agent 1, 2 at time n
+    Agent 1 sees: Agent 0 at time n+1, Agent 2 at time n
+    Agent 2 sees: Agent 0, 1 at time n+1
+    """
+    X = X0.copy()
+    history = [X.copy()]
+    
+    for _ in range(n_iterations):
+        X_new = X.copy()
+        
+        # Agent 0 updates first (sees all at current time n)
+        X_new[0] = X[0] + alpha * ((X[1] - X[0]) + (X[2] - X[0]))
+        
+        # Agent 1 updates second (sees Agent 0 at n+1, Agent 2 at n)
+        X_new[1] = X[1] + alpha * ((X_new[0] - X[1]) + (X[2] - X[1]))
+        
+        # Agent 2 updates last (sees both Agent 0 and 1 at n+1)
+        X_new[2] = X[2] + alpha * ((X_new[0] - X[2]) + (X_new[1] - X[2]))
+        
+        X = X_new
+        history.append(X.copy())
+    
+    return np.array(history)
+
+
+# ==================== MATRIX-BASED ASYNC (for verification) ====================
+
+def matrix_based_async_consensus(X0, alpha=0.3, n_iterations=100):
+    """
+    Verify our async implementation matches the matrix formulation.
+    X(n+1) = M * X(n) where M = (I - αB)^(-1) * (I + αA)
+    """
+    # A matrix (current state contributions)
+    A = np.array([
+        [-2,  1,  1],
+        [ 0, -2,  1],
+        [ 0,  0, -2]
+    ])
+    
+    # B matrix (next state contributions) 
+    B = np.array([
+        [0, 0, 0],
+        [1, 0, 0],
+        [1, 1, 0]
+    ])
+    
+    # Transformation matrix
+    I = np.eye(3)
+    M = np.linalg.inv(I - alpha * B) @ (I + alpha * A)
+    
+    print(f"Transformation Matrix M (α={alpha}):")
+    print(M)
+    
+    eigenvalues = np.linalg.eig(M)[0]
+    print(f"\nEigenvalues: {eigenvalues}")
+    print(f"Max |λ| (excl. 1): {np.max(np.abs(eigenvalues[1:])):.6f}")
+    
+    # Simulate
+    X = X0.copy()
+    history = [X.copy()]
+    
+    for _ in range(n_iterations):
+        X = M @ X
+        history.append(X.copy())
+    
+    return np.array(history), M, eigenvalues
+
+
+# ==================== VISUALIZATION ====================
+
+def visualize_sync_vs_async(X0, alpha=0.3, n_iterations=100):
+    """
+    Side-by-side comparison of synchronous vs asynchronous consensus.
+    """
+    true_avg = np.mean(X0)
+    
+    # Run simulations
+    sync_history = synchronous_consensus_3_agents(X0, alpha, n_iterations)
+    async_history = asynchronous_consensus_3_agents(X0, alpha, n_iterations)
+    async_matrix_history, M, eigenvalues = matrix_based_async_consensus(X0, alpha, n_iterations)
+    
+    # Verify iterative and matrix methods match
+    if np.allclose(async_history, async_matrix_history):
+        print("\n[OK] Iterative and matrix async implementations MATCH!")
+    else:
+        print("\n[WARNING] Implementations don't match - check code!")
+    
+    # Final values
+    sync_final = sync_history[-1]
+    async_final = async_history[-1]
+    
+    sync_consensus = sync_final[0]
+    async_consensus = async_final[0]
+    
+    sync_drift = abs(sync_consensus - true_avg)
+    async_drift = abs(async_consensus - true_avg)
+    
+    print(f"\n{'='*70}")
+    print(f"RESULTS: α = {alpha}")
+    print(f"{'='*70}")
+    print(f"Initial states: {X0}")
+    print(f"True average: {true_avg:.3f}")
+    print(f"\nSynchronous:")
+    print(f"  Final value: {sync_consensus:.3f}")
+    print(f"  Drift: {sync_drift:.3f} ({(sync_drift/true_avg)*100:.2f}%)")
+    print(f"\nAsynchronous:")
+    print(f"  Final value: {async_consensus:.3f}")
+    print(f"  Drift: {async_drift:.3f} ({(async_drift/true_avg)*100:.2f}%)")
+    print(f"  Drift increase: {((async_drift - sync_drift)/true_avg)*100:.2f}%")
+    
+    # Create visualization
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # Plot 1: Synchronous convergence
+    ax1 = axes[0, 0]
+    ax1.plot(sync_history[:, 0], label='Agent 0', linewidth=2, color='blue')
+    ax1.plot(sync_history[:, 1], label='Agent 1', linewidth=2, color='green')
+    ax1.plot(sync_history[:, 2], label='Agent 2', linewidth=2, color='red')
+    ax1.axhline(true_avg, color='k', linestyle='--', linewidth=2, label=f'True Avg ({true_avg:.1f})')
+    ax1.set_xlabel('Iteration', fontsize=12)
+    ax1.set_ylabel('State Value', fontsize=12)
+    ax1.set_title(f'Synchronous Consensus (α={alpha})\nDrift: {sync_drift:.3f}', 
+                  fontsize=14, fontweight='bold')
+    ax1.legend(fontsize=10)
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Asynchronous convergence
+    ax2 = axes[0, 1]
+    ax2.plot(async_history[:, 0], label='Agent 0 (updates first)', linewidth=2, color='blue')
+    ax2.plot(async_history[:, 1], label='Agent 1', linewidth=2, color='green')
+    ax2.plot(async_history[:, 2], label='Agent 2 (updates last)', linewidth=2, color='red')
+    ax2.axhline(true_avg, color='k', linestyle='--', linewidth=2, label=f'True Avg ({true_avg:.1f})')
+    ax2.axhline(async_consensus, color='orange', linestyle=':', linewidth=2, 
+                label=f'Async Consensus ({async_consensus:.1f})')
+    ax2.set_xlabel('Iteration', fontsize=12)
+    ax2.set_ylabel('State Value', fontsize=12)
+    ax2.set_title(f'Asynchronous Consensus (α={alpha})\nDrift: {async_drift:.3f}', 
+                  fontsize=14, fontweight='bold')
+    ax2.legend(fontsize=10)
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Error comparison
+    ax3 = axes[1, 0]
+    sync_error = np.abs(sync_history - true_avg)
+    async_error = np.abs(async_history - true_avg)
+    ax3.plot(np.mean(sync_error, axis=1), label='Sync Avg Error', linewidth=3, color='blue')
+    ax3.plot(np.mean(async_error, axis=1), label='Async Avg Error', linewidth=3, color='red')
+    ax3.set_xlabel('Iteration', fontsize=12)
+    ax3.set_ylabel('Average Error from True Average', fontsize=12)
+    ax3.set_title('Error Convergence Comparison', fontsize=14, fontweight='bold')
+    ax3.set_yscale('log')
+    ax3.legend(fontsize=10)
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot 4: Direct comparison at final iteration
+    ax4 = axes[1, 1]
+    x_pos = np.arange(3)
+    width = 0.35
+    
+    ax4.bar(x_pos - width/2, sync_final, width, label='Synchronous', color='blue', alpha=0.7)
+    ax4.bar(x_pos + width/2, async_final, width, label='Asynchronous', color='red', alpha=0.7)
+    ax4.axhline(true_avg, color='k', linestyle='--', linewidth=2, label='True Average')
+    
+    ax4.set_xlabel('Agent', fontsize=12)
+    ax4.set_ylabel('Final State Value', fontsize=12)
+    ax4.set_title('Final Converged Values', fontsize=14, fontweight='bold')
+    ax4.set_xticks(x_pos)
+    ax4.set_xticklabels(['Agent 0', 'Agent 1', 'Agent 2'])
+    ax4.legend(fontsize=10)
+    ax4.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    plt.savefig('async_vs_sync_3agents.png', dpi=150, bbox_inches='tight')
+    print(f"\n[OK] Plot saved to: async_vs_sync_3agents.png")
+    
+    return sync_history, async_history, M, eigenvalues
+
+
+# ==================== TEST DIFFERENT ALPHA VALUES ====================
+
+def test_alpha_sweep():
+    """
+    Test multiple alpha values to reproduce Table II from paper.
+    """
+    X0 = np.array([100.0, 50.0, 20.0])  # Paper's example
+    true_avg = np.mean(X0)
+    alphas = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    
+    print(f"\n{'='*70}")
+    print(f"ALPHA SWEEP TEST (Replicating Table II)")
+    print(f"{'='*70}")
+    print(f"Initial states: {X0}, True average: {true_avg:.2f}\n")
+    print(f"{'α':<8} {'Sync Final':<12} {'Async Final':<12} {'Async Drift':<12} {'Drift %':<10} {'Status':<15}")
+    print("-"*70)
+    
+    results = []
+    
+    for alpha in alphas:
+        sync_hist = synchronous_consensus_3_agents(X0, alpha, 200)
+        async_hist = asynchronous_consensus_3_agents(X0, alpha, 200)
+        
+        sync_final = sync_hist[-1, 0]
+        async_final = async_hist[-1, 0]
+        
+        async_drift = abs(async_final - true_avg)
+        drift_percent = (async_drift / true_avg) * 100
+        
+        # Check for blowout (converges to wrong sign)
+        if async_final < 0 and true_avg > 0:
+            status = "BLOWOUT (neg)"
+        elif drift_percent > 100:
+            status = "BLOWOUT (huge)"
+        elif drift_percent > 50:
+            status = "UNSTABLE"
+        else:
+            status = "OK"
+        
+        print(f"{alpha:<8.1f} {sync_final:<12.3f} {async_final:<12.3f} {async_drift:<12.3f} {drift_percent:<10.2f} {status:<15}")
+        
+        results.append({
+            'alpha': alpha,
+            'sync_final': sync_final,
+            'async_final': async_final,
+            'drift': async_drift,
+            'drift_percent': drift_percent,
+            'status': status
+        })
+    
+    return results
+
+
+# ==================== MAIN ====================
+
+if __name__ == "__main__":
+    print("="*70)
+    print("STEP 1: 3-AGENT ASYNC CONSENSUS VALIDATION")
+    print("="*70)
+    
+    # Test 1: Single alpha comparison
+    print("\n[TEST 1] Basic Sync vs Async Comparison (α=0.3)")
+    print("-"*70)
+    X0 = np.array([100.0, 50.0, 20.0])
+    sync_hist, async_hist, M, eigenvalues = visualize_sync_vs_async(X0, alpha=0.3, n_iterations=100)
+    
+    # Test 2: Alpha sweep
+    print("\n[TEST 2] Alpha Sweep")
+    print("-"*70)
+    results = test_alpha_sweep()
+    
+    # Test 3: Verify blowout at α=0.7
+    print("\n[TEST 3] Detailed Analysis at α=0.7 (Blowout Region)")
+    print("-"*70)
+    sync_hist_07, async_hist_07, M_07, eig_07 = visualize_sync_vs_async(X0, alpha=0.7, n_iterations=100)
+    
+    print("\n" + "="*70)
+    print("STEP 1 VALIDATION COMPLETE!")
+    print("="*70)
+    print("\nNext Steps:")
+    print("  1. Verify plots match paper's Figure 6 and 7")
+    print("  2. Confirm drift values match Table II")
+    print("  3. Ready to integrate into DecentralizedFormation.py")
+    
+    plt.show()

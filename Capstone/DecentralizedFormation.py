@@ -32,7 +32,7 @@ logging.getLogger('matplotlib.axes._base').setLevel(logging.ERROR)
 VIS_GRAPH_OVERLAY = True
 VIS_BARRIERS = True
 VIS_2D_TOPVIEW = True
-FOCUS_AGENT = 4
+FOCUS_AGENT = 3
 CONVERGENCE_THRESHOLD = 0.05
 CONVERGENCE_VELOCITY = 0.01
 NUM_AGENTS = 5
@@ -349,7 +349,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         )
         print(f"Minimum sensing radius for safety: {R_min:.2f}m")
         if cbf_filter.R_sense < R_min:
-            print(f"⚠️  WARNING: Using R={cbf_filter.R_sense}m < {R_min:.2f}m")
+            print(f"WARNING: Using R={cbf_filter.R_sense}m < {R_min:.2f}m")
     
     # Initialize target
     formation_radius = FORMATION_RADIUS
@@ -361,7 +361,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             duration=TARGET_TIME,
             dt=dt
         )
-        print(f"Moving target: {target.start_pos} → {target.end_pos} over {target.duration}s")
+        print(f"Moving target: {target.start_pos} -> {target.end_pos} over {target.duration}s")
     else:
         target = None
         target_pos = np.array([0.0, 0.0, 2.0])
@@ -516,6 +516,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 target_traj_line_2d, = ax2d.plot([], [], 'r--', linewidth=2, alpha=0.5, zorder=1)
             
             ideal_markers_2d = []
+            position_labels_2d = []  # Store position labels for updating
             for i in range(n_agents):
                 angle = (2 * np.pi * i) / n_agents
                 ideal_x = current_target_pos[0] + formation_radius * np.cos(angle)
@@ -523,8 +524,10 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                 marker = ax2d.scatter(ideal_x, ideal_y, c='green', marker='x', s=300, 
                            alpha=0.5, edgecolors='orange', linewidths=3, zorder=4)
                 ideal_markers_2d.append(marker)
-                ax2d.text(ideal_x, ideal_y + 0.7, f'Pos{i}', fontsize=9, 
-                        ha='center', color='orange', weight='bold')
+                # Create label and store it for updating
+                label = ax2d.text(ideal_x, ideal_y + 0.7, f'Pos{i}', fontsize=9, 
+                        ha='center', color='orange', weight='bold', zorder=10)
+                position_labels_2d.append(label)
             
             obstacle_scatters_2d = []
             for obs in obstacles:
@@ -668,7 +671,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             positions = np.array([agent.position for agent in agents])
             is_safe, violations = cbf_filter.check_safety(positions, obstacles)
             if not is_safe:
-                print(f"\n⚠️  SAFETY VIOLATION at iteration {iteration}:")
+                print(f"\nSAFETY VIOLATION at iteration {iteration}:")
                 for v in violations:
                     print(f"   {v}")
         else:
@@ -710,7 +713,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             convergence_count += 1
             if convergence_count >= convergence_patience:
                 converged = True
-                print(f"\n✅ FORMATION CONVERGED at iteration {iteration}")
+                print(f"\nFORMATION CONVERGED at iteration {iteration}")
                 print(f"   Max error: {max_error:.3f}m < {CONVERGENCE_THRESHOLD}m")
                 print(f"   Max velocity: {max_vel:.3f}m/s < {CONVERGENCE_VELOCITY}m/s")
                 if not animate:
@@ -833,6 +836,8 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
                         ideal_x = current_target_pos[0] + formation_radius * np.cos(angle)
                         ideal_y = current_target_pos[1] + formation_radius * np.sin(angle)
                         marker.set_offsets([[ideal_x, ideal_y]])
+                        # Update position label to follow ideal position
+                        position_labels_2d[i].set_position((ideal_x, ideal_y + 0.7))
                     
                     formation_circle_2d.set_data(circle_x, circle_y)
                 
@@ -931,12 +936,12 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
             avg_acc = np.mean([np.linalg.norm(a.acceleration) for a in agents])
             info_text.set_text(
                 f"Iteration: {iteration:04d}\n"
-                f"Center→Target: {center_to_target_error:.3f} m\n"
+                f"Center->Target: {center_to_target_error:.3f} m\n"
                 f"Avg form error: {avg_error:.3f} m\n"
                 f"Max form error: {max_error:.3f} m\n"
                 f"Avg vel: {avg_vel:.3f} m/s\n"
                 f"Max vel: {max_vel:.3f} m/s\n"
-                f"Avg acc: {avg_acc:.3f} m/s²"
+                f"Avg acc: {avg_acc:.3f} m/s^2"
             )
             
             plt.pause(0.001)
@@ -971,7 +976,7 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
         
         if iteration % 50 == 0:
             print(f"Iter {iteration:3d}: "
-                  f"Center→Target: {center_to_target_error:.3f}m, "
+                  f"Center->Target: {center_to_target_error:.3f}m, "
                   f"Formation error: avg={avg_error:.3f}m, max={max_error:.3f}m, "
                   f"Avg vel: {avg_vel:.3f}m/s")
         
@@ -1014,9 +1019,9 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.1, use_cbf=Tr
     
     if converged:
         actual_iter = len(agents[0].position_hist) - 1
-        print(f"\n✅ Formation converged after {actual_iter} iterations ({actual_iter*dt:.1f}s)")
+        print(f"\nFormation converged after {actual_iter} iterations ({actual_iter*dt:.1f}s)")
     else:
-        print(f"\n⚠️  Formation did not converge within {max_iter} iterations")
+        print(f"\nFormation did not converge within {max_iter} iterations")
     
     cbf_stats = cbf_filter.get_statistics() if use_cbf else None
     return agents, target, cbf_stats
@@ -1098,7 +1103,7 @@ def plot_results_3d(agents, target=None):
     if hasattr(agents[0], 'center_error_hist'):
         center_errors = agents[0].center_error_hist
         ax3.plot(time[:len(center_errors)], center_errors, 'b-', 
-                linewidth=3, label='Formation Center → Target', alpha=0.8)
+                linewidth=3, label='Formation Center -> Target', alpha=0.8)
     
     for i, agent in enumerate(agents):
         errors = [np.linalg.norm(np.array(agent.position_hist[j]) - 
