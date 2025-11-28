@@ -45,9 +45,9 @@ CONVERGENCE_VELOCITY = 0.01
 NUM_AGENTS = 5
 N_OBSTACLES = 3
 
-# Communication and Sensing Parameters (FIXED - MATCH ASYNC!)
-COMM_RANGE = 10.0              # Communication range (m) - FIXED: was 8.0, now 10.0
-VISUAL_SENSING_RANGE = 7.0     # Visual sensing for target & obstacles (m) - FIXED: was 12.0, now 7.0 LIMITED!
+# Communication and Sensing Parameters
+COMM_RANGE = 8.0              
+VISUAL_SENSING_RANGE = 7.0     
 TARGET_TIME = 15.0
 FORMATION_RADIUS = 5.0
 
@@ -795,7 +795,6 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.02, consensus
             new_velocities.append(new_vel)
             new_accelerations.append(acc_safe[i])
         
-        # Apply ALL updates simultaneously (TRUE SYNCHRONOUS!)
         for i, agent in enumerate(agents):
             agent.position = new_positions[i].copy()
             agent.velocity = new_velocities[i].copy()
@@ -849,11 +848,11 @@ def run_formation_with_cbf(n_agents=NUM_AGENTS, max_iter=500, dt=0.02, consensus
                                         current_positions[:, 1], 
                                         current_positions[:, 2])
             
-            # Color based on direct sensing (green) vs consensus (color)
+            
             agent_colors = []
             for agent in agents:
                 if agent.has_direct_sensing:
-                    agent_colors.append([0, 1, 0, 1])  # GREEN
+                    agent_colors.append([0, 1, 0, 1])  
                 else:
                     agent_colors.append(colors[agent.id])
             drone_scatter.set_color(agent_colors)
@@ -1267,7 +1266,7 @@ if __name__ == "__main__":
         n_agents=NUM_AGENTS,
         max_iter=2000,
         dt=0.02,
-        consensus_alpha=0.7,  # Try 0.3, 0.7 to compare with async
+        consensus_alpha=0.7,  #  0.3, 0.7 
         use_cbf=True,  
         animate=True,
         moving_target=True
