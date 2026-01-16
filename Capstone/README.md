@@ -88,7 +88,7 @@ Implemented using **OSQP solver** for real-time performance.
 | **Target Tracking Error** | 7.5m drift | 7.3m drift | 8.2m drift | 8.7m drift |
 | **Control Effort** | 0.048 m/s² | 0.045 m/s² | 0.032 m/s² | 0.024 m/s² |
 | **CBF Violations** | **0** | **0** | **0** | **0** |
-| **Stability** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| **Stability** | ⭐⭐⭐⭐⭐ | ⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
 
 ### Key Findings
 
