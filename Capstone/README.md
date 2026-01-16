@@ -42,28 +42,33 @@ This project implements **distributed formation control** for multi-agent quadro
 
 ## 🏗️ Architecture
 
-### System Components
+The system implements a fully distributed control architecture where each drone operates autonomously using only local information:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  Multi-Drone System                 │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  Agent 1    Agent 2    Agent 3    Agent 4   Agent 5│
-│     │          │          │          │         │   │
-│     └──────────┴──────────┴──────────┴─────────┘   │
-│              Communication Network                  │
-│              (8m range, neighbor-to-neighbor)       │
-│                                                     │
-│  ┌─────────────────────────────────────────────┐   │
-│  │  Local Controllers (per agent)              │   │
-│  ├─────────────────────────────────────────────┤   │
-│  │  1. Formation Control (PD Controller)       │   │
-│  │  2. GCBF Safety Filter (Local QP)           │   │
-│  │  3. Target Estimation (Consensus)           │   │
-│  │  4. Obstacle Detection (7m sensing)         │   │
-│  └─────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
+Agent i:
+  ┌─────────────────────────────────────┐
+  │   Sensors & Communication           │
+  ├─────────────────────────────────────┤
+  │ • Position/Velocity (own state)     │
+  │ • Neighbor states (8m comm range)   │
+  │ • Target position (7m visual range) │
+  │ • Obstacle detection (7m range)     │
+  └─────────────────────────────────────┘
+              ↓
+  ┌─────────────────────────────────────┐
+  │   Formation Controller (PD)         │
+  │   → Desired Acceleration            │
+  └─────────────────────────────────────┘
+              ↓
+  ┌─────────────────────────────────────┐
+  │   GCBF Safety Filter (Local QP)     │
+  │   → Safe Acceleration               │
+  └─────────────────────────────────────┘
+              ↓
+  ┌─────────────────────────────────────┐
+  │   Dynamics Integration              │
+  │   → New Position/Velocity           │
+  └─────────────────────────────────────┘
 ```
 
 ### Synchronous vs Asynchronous Protocols
@@ -104,13 +109,13 @@ Implemented using **OSQP solver** for real-time performance.
 
 ### Performance Comparison
 
-| Metric | Synchronous (α=0.3) | Asynchronous (α=0.3) | Asynchronous (α=0.7) |
-|--------|---------------------|----------------------|----------------------|
-| **Avg Formation Error** | 0.35m | 0.42m | 0.38m |
-| **Target Tracking Error** | 7.5m drift | 8.2m drift | 8.7m drift |
-| **Control Effort** | 0.048 m/s² | 0.032 m/s² | 0.024 m/s² |
-| **CBF Violations** | **0** | **0** | **0** |
-| **Stability** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
+| Metric | Synchronous (α=0.3) | Synchronous (α=0.7) | Asynchronous (α=0.3) | Asynchronous (α=0.7) |
+|--------|---------------------|---------------------|----------------------|----------------------|
+| **Avg Formation Error** | 0.35m | 0.33m | 0.42m | 0.38m |
+| **Target Tracking Error** | 7.5m drift | 7.3m drift | 8.2m drift | 8.7m drift |
+| **Control Effort** | 0.048 m/s² | 0.045 m/s² | 0.032 m/s² | 0.024 m/s² |
+| **CBF Violations** | **0** | **0** | **0** | **0** |
+| **Stability** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐ |
 
 ### Key Findings
 
@@ -343,5 +348,5 @@ If you use this code in your research, please cite:
 ---
 
 <div align="center">
-
+Made with ❤️ for Multi-Robot Systems Research
 </div>
