@@ -92,7 +92,7 @@ Implemented using **OSQP solver** for real-time performance.
 
 ### Key Findings
 
-✅ **Asynchronous α=0.7 achieved best results**:
+✅ **Asynchronous yielded better results for  α=0.7**:
 - 50% lower control effort vs synchronous
 - Smooth, natural agent motion
 - Better stability despite sequential updates
