@@ -42,34 +42,7 @@ This project implements **distributed formation control** for multi-agent quadro
 
 ## 🏗️ Architecture
 
-The system implements a fully distributed control architecture where each drone operates autonomously using only local information:
-
-```
-Agent i:
-  ┌─────────────────────────────────────┐
-  │   Sensors & Communication           │
-  ├─────────────────────────────────────┤
-  │ • Position/Velocity (own state)     │
-  │ • Neighbor states (8m comm range)   │
-  │ • Target position (7m visual range) │
-  │ • Obstacle detection (7m range)     │
-  └─────────────────────────────────────┘
-              ↓
-  ┌─────────────────────────────────────┐
-  │   Formation Controller (PD)         │
-  │   → Desired Acceleration            │
-  └─────────────────────────────────────┘
-              ↓
-  ┌─────────────────────────────────────┐
-  │   GCBF Safety Filter (Local QP)     │
-  │   → Safe Acceleration               │
-  └─────────────────────────────────────┘
-              ↓
-  ┌─────────────────────────────────────┐
-  │   Dynamics Integration              │
-  │   → New Position/Velocity           │
-  └─────────────────────────────────────┘
-```
+The system implements a fully distributed control architecture where each drone operates autonomously using only local information.
 
 ### Synchronous vs Asynchronous Protocols
 
