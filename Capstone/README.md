@@ -291,6 +291,10 @@ solver.update(eps_abs=1e-4, eps_rel=1e-4)
 Robotics Engineering Graduate Student  
 Worcester Polytechnic Institute
 
+**Harmeet S Dhillon**  
+Robotics Engineering Graduate Student  
+Worcester Polytechnic Institute
+
 **Advisor**: Prof. Kevin Leahy  
 Automata Lab, WPI
 
